@@ -1,5 +1,29 @@
 # Papaji GPS - Pro Hardware Wiring Guide
 
+## 📊 System Flowchart
+```mermaid
+graph TD
+    %% Power System
+    TractorBat[🚜 Tractor Battery 12V] -->|Power| Buck[LM2596 Buck Converter]
+    Buck -->|5V| TP4056[TP4056 Charger]
+    TP4056 -->|Charge/Discharge| LiIon[🔋 18650 Battery]
+    TP4056 -->|3.7V - 4.2V| PowerBus{⚡ Main Power Bus}
+
+    %% Power Distribution
+    PowerBus -->|VCC| SIM800L[📶 SIM800L GSM]
+    PowerBus -->|VIN| ESP32[🧠 ESP32 Microcontroller]
+    ESP32 -->|3.3V| GPS[🛰️ NEO-6M GPS]
+
+    %% Data Connections
+    GPS -->|TX -> GPIO 16| ESP32
+    ESP32 -->|RX -> GPIO 17| GPS
+    SIM800L -->|TX -> GPIO 4| ESP32
+    ESP32 -->|RX -> GPIO 2| SIM800L
+
+    %% Cloud
+    SIM800L -.->|2G GPRS| Cloud((☁️ Supabase Cloud))
+```
+
 ## ⚡ The "UPS" Power System (Critical)
 This setup ensures the tracker runs even if the tractor is turned off or wires are cut.
 
