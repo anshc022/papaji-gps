@@ -18,12 +18,22 @@ jobs:
       - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.EC2_HOST }}
+          host: 3.27.84.253
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            cd ~/papaji-gps/backend
-            git pull origin main
+            mkdir -p ~/papaji-gps
+            cd ~/papaji-gps
+            
+            # Handle Private Repo Authentication
+            if [ ! -d ".git" ]; then
+              git clone https://oauth2:${{ secrets.GH_TOKEN }}@github.com/anshc022/papaji-gps.git .
+            else
+              git remote set-url origin https://oauth2:${{ secrets.GH_TOKEN }}@github.com/anshc022/papaji-gps.git
+              git pull origin main
+            fi
+            
+            cd backend
             npm install
             pm2 restart papaji-gps || pm2 start index.js --name papaji-gps
             echo "Deployed successfully!"
