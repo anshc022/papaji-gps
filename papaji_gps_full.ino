@@ -1,19 +1,25 @@
 /*
- * Papaji GPS Tracker Firmware
+ * Papaji GPS Tracker Firmware - Full Version
  * Board: ESP32 Dev Module
  * Modules: NEO-6M GPS, SIM800L GSM
  * 
- * Built with PlatformIO
+ * Instructions:
+ * 1. Open this file in Arduino IDE.
+ * 2. Install Libraries via Library Manager:
+ *    - TinyGSM (by Volodymyr Shymanskyy)
+ *    - TinyGPSPlus (by Mikal Hart)
+ *    - ArduinoJson (by Benoit Blanchon)
+ * 3. Select Board: "DOIT ESP32 DEVKIT V1"
+ * 4. Upload!
  */
 
-#include <Arduino.h> // Required for PlatformIO
 #define TINY_GSM_MODEM_SIM800
 #include <TinyGsmClient.h>
 #include <TinyGPS++.h>
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
 #include <esp_task_wdt.h> // Watchdog Library
-#include <Update.h> // OTA Library
+#include <esp_arduino_version.h> // Version check
 #include <FS.h> // Filesystem
 #include <SPIFFS.h> // SPI Flash File System
 
@@ -23,19 +29,14 @@ const char gprsUser[] = "";
 const char gprsPass[] = "";
 
 // Backend Server Details
-const char server[]   = "44de7dc5e60415.lhr.life"; 
-const int  port       = 80;
+const char server[]   = "3.27.84.253"; 
+const int  port       = 3000;
 const char resource[] = "/api/telemetry";
-
-// OTA Details
-const char ota_version_url[] = "/api/ota/version";
-const char ota_bin_url[]     = "/api/ota/firmware";
-const String CURRENT_VERSION = "1.0.0"; // Update this when releasing new firmware
 
 const String DEVICE_ID = "papaji_tractor_01";
 const int WDT_TIMEOUT = 120; // Restart if stuck for 120 seconds
 
-// --- PINS (Updated from test.ino) ---
+// --- PINS ---
 // GSM (SIM800L) - Uses UART2
 #define GSM_RX 16 
 #define GSM_TX 17 
@@ -53,8 +54,6 @@ TinyGsm modem(gsmSerial);
 TinyGsmClient client(modem);
 
 unsigned long lastSend = 0;
-unsigned long lastOtaCheck = 0;
-const unsigned long otaInterval = 3600000; // Check for updates every 1 hour
 unsigned long currentInterval = 5000; // Dynamic Interval
 
 // Smart Cornering Variables
@@ -74,113 +73,6 @@ void flushBatch();
 bool sendRawJson(String jsonString);
 void saveOffline(String data);
 void processOfflineData();
-
-// --- OTA FUNCTIONS ---
-
-// Helper to read HTTP body (skips headers)
-String readHttpBody(TinyGsmClient& client) {
-  String body = "";
-  bool headerEnded = false;
-  unsigned long timeout = millis();
-  
-  // 1. Skip Headers
-  while (client.connected() && millis() - timeout < 10000) {
-    if (client.available()) {
-      String line = client.readStringUntil('\n');
-      if (line == "\r") {
-        headerEnded = true;
-        break;
-      }
-    }
-  }
-  
-  // 2. Read Body (with timeout for slow chunks)
-  if (headerEnded) {
-    timeout = millis();
-    while (client.connected() && millis() - timeout < 5000) {
-      if (client.available()) {
-        char c = client.read();
-        body += c;
-        timeout = millis(); // Reset timeout on data
-      }
-    }
-  }
-  return body;
-}
-
-void performUpdate(TinyGsmClient& client) {
-  Serial.println("Starting OTA Update...");
-  
-  // 1. Request Firmware
-  if (!client.connect(server, port)) {
-    Serial.println("Connection failed");
-    return;
-  }
-  
-  client.print(String("GET ") + ota_bin_url + " HTTP/1.1\r\n");
-  client.print(String("Host: ") + server + "\r\n");
-  client.print("Connection: close\r\n\r\n");
-
-  // 2. Skip Headers
-  unsigned long timeout = millis();
-  bool headerEnded = false;
-  long contentLength = 0;
-
-  while (client.connected() && millis() - timeout < 10000) {
-    if (client.available()) {
-      String line = client.readStringUntil('\n');
-      line.trim();
-      
-      if (line.startsWith("Content-Length:")) {
-        contentLength = line.substring(15).toInt();
-      }
-      
-      if (line == "") {
-        headerEnded = true;
-        break;
-      }
-    }
-  }
-
-  if (!headerEnded) {
-    Serial.println("Failed to skip headers");
-    return;
-  }
-
-  // 3. Begin Update
-  if (contentLength > 0) {
-    if (!Update.begin(contentLength)) {
-      Update.printError(Serial);
-      return;
-    }
-  } else {
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-      Update.printError(Serial);
-      return;
-    }
-  }
-
-  // 4. Write Data
-  size_t written = Update.writeStream(client);
-  
-  if (written == contentLength || contentLength == 0) {
-    Serial.println("Written : " + String(written) + " successfully");
-  } else {
-    Serial.println("Written only : " + String(written) + "/" + String(contentLength) + ". Retry?");
-  }
-
-  if (Update.end()) {
-    Serial.println("OTA Done!");
-    if (Update.isFinished()) {
-      Serial.println("Update successfully completed. Rebooting.");
-      ESP.restart();
-    } else {
-      Serial.println("Update not finished? Something went wrong!");
-    }
-  } else {
-    Serial.println("Error Occurred. Error #: " + String(Update.getError()));
-  }
-}
 
 void testInternet() {
   Serial.println("Testing Internet Connectivity...");
@@ -208,64 +100,7 @@ void testInternet() {
   }
 }
 
-void checkOTA() {
-  Serial.println("Checking for updates...");
-  TinyGsmClient client(modem);
 
-  // Retry connection 3 times
-  bool connected = false;
-  for (int i = 0; i < 3; i++) {
-    Serial.print("Connecting to server (Attempt "); Serial.print(i+1); Serial.println(")...");
-    if (client.connect(server, port)) {
-      connected = true;
-      break;
-    }
-    Serial.println("Connect failed. Retrying in 3s...");
-    delay(3000);
-  }
-
-  if (!connected) {
-    Serial.println("OTA: Connection failed after 3 attempts");
-    return;
-  }
-
-  // Request Version
-  client.print(String("GET ") + ota_version_url + " HTTP/1.1\r\n");
-  client.print(String("Host: ") + server + "\r\n");
-  client.print("Connection: close\r\n\r\n");
-
-  String responseBody = readHttpBody(client);
-  responseBody.trim();
-  client.stop();
-
-  // Parse JSON Version
-  String serverVersion = "";
-  StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, responseBody);
-
-  if (!error && doc.containsKey("version")) {
-    serverVersion = doc["version"].as<String>();
-  } else {
-    // Fallback: maybe it's raw text?
-    serverVersion = responseBody;
-  }
-
-  Serial.print("Current: "); Serial.println(CURRENT_VERSION);
-  Serial.print("Server: "); Serial.println(serverVersion);
-
-  // Safety Check: Ignore HTML errors or long strings
-  if (serverVersion.length() > 10 || serverVersion.indexOf("Tunnel") != -1 || serverVersion.indexOf("50") != -1) {
-     Serial.println("Invalid version response. Skipping.");
-     return;
-  }
-
-  if (serverVersion.length() > 0 && serverVersion != CURRENT_VERSION) {
-    Serial.println("New version available! Updating...");
-    performUpdate(client);
-  } else {
-    Serial.println("No update needed.");
-  }
-}
 
 void setup() {
   // 1. Debug Serial
@@ -280,7 +115,17 @@ void setup() {
   }
 
   // 3. Enable Watchdog (Auto-restart if frozen)
-  esp_task_wdt_init(WDT_TIMEOUT, true);
+  #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    esp_task_wdt_deinit(); // Fix: Disable default WDT first
+    esp_task_wdt_config_t wdt_config = {
+      .timeout_ms = WDT_TIMEOUT * 1000,
+      .trigger_panic = true
+    };
+    esp_task_wdt_init(&wdt_config);
+  #else
+    esp_task_wdt_init(WDT_TIMEOUT, true);
+  #endif
+  
   esp_task_wdt_add(NULL);
 
   // 4. Start Serials
@@ -289,6 +134,7 @@ void setup() {
 
   // 4. Initialize Modem
   Serial.println("Initializing modem...");
+  esp_task_wdt_reset(); // Reset WDT before long operation
   modem.restart();
   
   // 5. Connect to GPRS
@@ -299,9 +145,7 @@ void setup() {
   Serial.println("Waiting 3s before server connection...");
   delay(3000); 
 
-  // 6. Initial OTA Check (DISABLED - Serveo uses HTTPS which SIM800L can't handle)
-  // checkOTA();
-  Serial.println("OTA Check disabled. Starting main loop...");
+  Serial.println("Starting main loop...");
 }
 
 void connectToNetwork() {
@@ -319,25 +163,17 @@ void loop() {
   // Reset Watchdog Timer (Feed the dog)
   esp_task_wdt_reset();
 
-  // 0. Check for OTA Updates
-  if (millis() - lastOtaCheck > otaInterval) {
-    checkConnection();
-    checkOTA();
-    lastOtaCheck = millis();
-  }
-
   // 1. Read GPS Data
   while (gpsSerial.available() > 0) {
     gps.encode(gpsSerial.read());
   }
 
   // 2. Smart Interval Logic
-  // If speed < 2 km/h (Parked), send every 5 mins (300,000 ms)
-  // If speed > 2 km/h (Moving), send every 5 seconds (5,000 ms)
+  // TEST MODE: Send every 10 seconds even if parked
   if (gps.speed.kmph() < 2.0) {
-    currentInterval = 300000; 
+    currentInterval = 10000; // 10 Seconds (was 5 mins)
   } else {
-    currentInterval = 5000;
+    currentInterval = 5000; // 5 Seconds
   }
 
   // 2.5 Smart Cornering Logic
@@ -576,9 +412,4 @@ void flushBatch() {
     saveOffline(jsonString);
     batchArray.clear();
   }
-}
-
-// Replaces old sendData
-void sendData_OLD_UNUSED(float lat, float lon, float speed, String source, int signal) {
-  // ... kept for reference or deleted ...
 }

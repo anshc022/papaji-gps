@@ -274,36 +274,7 @@ app.get('/api/stats', async (req, res) => {
   });
 });
 
-// --- 4. OTA Updates Endpoints ---
-const fs = require('fs');
-const path = require('path');
-
-// GET /api/ota/version
-// Returns the latest version number available on the server
-app.get('/api/ota/version', (req, res) => {
-  try {
-    const versionPath = path.join(__dirname, 'firmware', 'version.txt');
-    if (fs.existsSync(versionPath)) {
-      const version = fs.readFileSync(versionPath, 'utf8').trim();
-      res.json({ version });
-    } else {
-      res.json({ version: '1.0.0' }); // Default
-    }
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to check version' });
-  }
-});
-
-// GET /api/ota/firmware
-// Downloads the firmware.bin file
-app.get('/api/ota/firmware', (req, res) => {
-  const firmwarePath = path.join(__dirname, 'firmware', 'firmware.bin');
-  if (fs.existsSync(firmwarePath)) {
-    res.download(firmwarePath, 'firmware.bin');
-  } else {
-    res.status(404).send('Firmware not found');
-  }
-});
+// --- 4. OTA Updates Endpoints (REMOVED) ---
 
 // --- 5. Diagnosis & Auto-Repair Endpoint ---
 // POST /api/diagnose
