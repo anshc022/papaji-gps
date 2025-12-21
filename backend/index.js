@@ -1,10 +1,62 @@
 const express = require('express');
 const cors = require('cors');
 const supabase = require('./supabase');
+const mqtt = require('mqtt');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// --- MQTT SETUP ---
+const MQTT_BROKER = 'mqtt://broker.hivemq.com:1883';
+const MQTT_TOPIC = 'papaji/gps/telemetry';
+
+const mqttClient = mqtt.connect(MQTT_BROKER);
+
+mqttClient.on('connect', () => {
+  console.log('[MQTT] Connected to HiveMQ broker');
+  mqttClient.subscribe(MQTT_TOPIC, (err) => {
+    if (!err) {
+      console.log(`[MQTT] Subscribed to topic: ${MQTT_TOPIC}`);
+    } else {
+      console.error('[MQTT] Subscribe error:', err);
+    }
+  });
+});
+
+mqttClient.on('message', async (topic, message) => {
+  try {
+    const data = JSON.parse(message.toString());
+    console.log(`[MQTT] Received:`, data);
+
+    // Save to Supabase
+    const dbRow = {
+      device_id: data.device_id,
+      latitude: data.latitude,
+      longitude: data.longitude,
+      speed: data.speed_kmh,
+      battery: data.battery || 4.0,
+      source: data.source || 'gps',
+      created_at: new Date().toISOString()
+    };
+
+    const { error } = await supabase
+      .from('tracking_history')
+      .insert([dbRow]);
+
+    if (error) {
+      console.error('[MQTT] Supabase Error:', error);
+    } else {
+      console.log(`[MQTT] ✓ Saved to database: ${data.latitude}, ${data.longitude}`);
+    }
+  } catch (err) {
+    console.error('[MQTT] Parse error:', err.message);
+  }
+});
+
+mqttClient.on('error', (err) => {
+  console.error('[MQTT] Connection error:', err);
+});
 
 // In-memory command queue for Remote Config
 const pendingCommands = {}; 

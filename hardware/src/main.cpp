@@ -1,395 +1,186 @@
 /*
- * Papaji GPS Tracker Firmware
+ * Papaji GPS Tracker Firmware - MQTT Version
  * Board: ESP32 Dev Module
  * Modules: NEO-6M GPS, SIM800L GSM
  * 
- * Built with PlatformIO
+ * Uses MQTT for reliable communication (no HTTPS needed!)
  */
 
-#include <Arduino.h> // Required for PlatformIO
+#include <Arduino.h>
 #define TINY_GSM_MODEM_SIM800
 #include <TinyGsmClient.h>
 #include <TinyGPS++.h>
 #include <ArduinoJson.h>
 #include <HardwareSerial.h>
-#include <esp_task_wdt.h> // Watchdog Library
-#include <Update.h> // OTA Library
-#include <FS.h> // Filesystem
-#include <SPIFFS.h> // SPI Flash File System
+#include <esp_task_wdt.h>
+#include <PubSubClient.h>
+#include <FS.h>
+#include <SPIFFS.h>
 
 // --- CONFIGURATION ---
 const char apn[]      = "airtelgprs.com"; 
 const char gprsUser[] = "";
 const char gprsPass[] = "";
 
-// Backend Server Details
-const char server[]   = "f72095ed4e57cbdf-49-43-250-46.serveousercontent.com"; 
-const int  port       = 80;
-const char resource[] = "/api/telemetry";
-
-// OTA Details
-const char ota_version_url[] = "/api/ota/version";
-const char ota_bin_url[]     = "/api/ota/firmware";
-const String CURRENT_VERSION = "1.0.0"; // Update this when releasing new firmware
+// MQTT Broker (Free Public Broker - No Auth Required)
+const char* mqtt_server = "broker.hivemq.com";
+const int mqtt_port = 1883;
+const char* mqtt_topic = "papaji/gps/telemetry";
+const char* mqtt_client_id = "papaji_tractor_01";
 
 const String DEVICE_ID = "papaji_tractor_01";
-const int WDT_TIMEOUT = 120; // Restart if stuck for 120 seconds
+const int WDT_TIMEOUT = 120;
 
-// --- PINS (Updated from test.ino) ---
-// GSM (SIM800L) - Uses UART2
+// --- PINS ---
 #define GSM_RX 16 
 #define GSM_TX 17 
-
-// GPS (NEO-6M) - Uses UART1
 #define GPS_RX 4 
 #define GPS_TX 5 
 
 // --- OBJECTS ---
 TinyGPSPlus gps;
-HardwareSerial gpsSerial(1); // UART1 for GPS
-HardwareSerial gsmSerial(2); // UART2 for GSM 
+HardwareSerial gpsSerial(1);
+HardwareSerial gsmSerial(2);
 
 TinyGsm modem(gsmSerial);
-TinyGsmClient client(modem);
+TinyGsmClient gsmClient(modem);
+PubSubClient mqtt(gsmClient);
 
 unsigned long lastSend = 0;
-unsigned long lastOtaCheck = 0;
-const unsigned long otaInterval = 3600000; // Check for updates every 1 hour
-unsigned long currentInterval = 5000; // Dynamic Interval
+unsigned long currentInterval = 5000;
 
-// Smart Cornering Variables
+// Smart Cornering
 double lastHeading = 0;
-const double CORNER_THRESHOLD = 30.0; // Degrees turn to trigger update
-
-// Batching Variables
-const int BATCH_SIZE = 12; // Send every 12 points (approx 1 min)
-DynamicJsonDocument batchDoc(8192);
-JsonArray batchArray = batchDoc.to<JsonArray>();
+const double CORNER_THRESHOLD = 30.0;
 
 // Forward Declarations
 void connectToNetwork();
-void checkConnection();
-void bufferData(float lat, float lon, float speed, String source, int signal);
-void flushBatch();
-bool sendRawJson(String jsonString);
-void saveOffline(String data);
-void processOfflineData();
-
-// --- OTA FUNCTIONS ---
-
-// Helper to read HTTP body (skips headers)
-String readHttpBody(TinyGsmClient& client) {
-  String body = "";
-  bool headerEnded = false;
-  unsigned long timeout = millis();
-  
-  // 1. Skip Headers
-  while (client.connected() && millis() - timeout < 10000) {
-    if (client.available()) {
-      String line = client.readStringUntil('\n');
-      if (line == "\r") {
-        headerEnded = true;
-        break;
-      }
-    }
-  }
-  
-  // 2. Read Body (with timeout for slow chunks)
-  if (headerEnded) {
-    timeout = millis();
-    while (client.connected() && millis() - timeout < 5000) {
-      if (client.available()) {
-        char c = client.read();
-        body += c;
-        timeout = millis(); // Reset timeout on data
-      }
-    }
-  }
-  return body;
-}
-
-void performUpdate(TinyGsmClient& client) {
-  Serial.println("Starting OTA Update...");
-  
-  // 1. Request Firmware
-  if (!client.connect(server, port)) {
-    Serial.println("Connection failed");
-    return;
-  }
-  
-  client.print(String("GET ") + ota_bin_url + " HTTP/1.1\r\n");
-  client.print(String("Host: ") + server + "\r\n");
-  client.print("Connection: close\r\n\r\n");
-
-  // 2. Skip Headers
-  unsigned long timeout = millis();
-  bool headerEnded = false;
-  long contentLength = 0;
-
-  while (client.connected() && millis() - timeout < 10000) {
-    if (client.available()) {
-      String line = client.readStringUntil('\n');
-      line.trim();
-      
-      if (line.startsWith("Content-Length:")) {
-        contentLength = line.substring(15).toInt();
-      }
-      
-      if (line == "") {
-        headerEnded = true;
-        break;
-      }
-    }
-  }
-
-  if (!headerEnded) {
-    Serial.println("Failed to skip headers");
-    return;
-  }
-
-  // 3. Begin Update
-  if (contentLength > 0) {
-    if (!Update.begin(contentLength)) {
-      Update.printError(Serial);
-      return;
-    }
-  } else {
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-      Update.printError(Serial);
-      return;
-    }
-  }
-
-  // 4. Write Data
-  size_t written = Update.writeStream(client);
-  
-  if (written == contentLength || contentLength == 0) {
-    Serial.println("Written : " + String(written) + " successfully");
-  } else {
-    Serial.println("Written only : " + String(written) + "/" + String(contentLength) + ". Retry?");
-  }
-
-  if (Update.end()) {
-    Serial.println("OTA Done!");
-    if (Update.isFinished()) {
-      Serial.println("Update successfully completed. Rebooting.");
-      ESP.restart();
-    } else {
-      Serial.println("Update not finished? Something went wrong!");
-    }
-  } else {
-    Serial.println("Error Occurred. Error #: " + String(Update.getError()));
-  }
-}
-
-void testInternet() {
-  Serial.println("Testing Internet Connectivity...");
-  
-  // 1. Check Signal Quality (0-31)
-  int csq = modem.getSignalQuality();
-  Serial.print("Signal Quality: "); Serial.print(csq); Serial.println(" (Min required: 10)");
-
-  // 2. Check IP Address
-  String localIP = modem.getLocalIP();
-  Serial.print("Device IP: "); Serial.println(localIP);
-
-  if (localIP == "0.0.0.0") {
-      Serial.println("ERR: No IP Address! APN might be wrong.");
-      return;
-  }
-
-  // 3. Test Connection
-  TinyGsmClient testClient(modem);
-  if (testClient.connect("www.google.com", 80)) {
-    Serial.println("Internet OK (Connected to google.com)");
-    testClient.stop();
-  } else {
-    Serial.println("Internet Failed! Check APN/SIM.");
-  }
-}
-
-void checkOTA() {
-  Serial.println("Checking for updates...");
-  TinyGsmClient client(modem);
-
-  // Retry connection 3 times
-  bool connected = false;
-  for (int i = 0; i < 3; i++) {
-    Serial.print("Connecting to server (Attempt "); Serial.print(i+1); Serial.println(")...");
-    if (client.connect(server, port)) {
-      connected = true;
-      break;
-    }
-    Serial.println("Connect failed. Retrying in 3s...");
-    delay(3000);
-  }
-
-  if (!connected) {
-    Serial.println("OTA: Connection failed after 3 attempts");
-    return;
-  }
-
-  // Request Version
-  client.print(String("GET ") + ota_version_url + " HTTP/1.1\r\n");
-  client.print(String("Host: ") + server + "\r\n");
-  client.print("Connection: close\r\n\r\n");
-
-  String responseBody = readHttpBody(client);
-  responseBody.trim();
-  client.stop();
-
-  // Parse JSON Version
-  String serverVersion = "";
-  StaticJsonDocument<200> doc;
-  DeserializationError error = deserializeJson(doc, responseBody);
-
-  if (!error && doc.containsKey("version")) {
-    serverVersion = doc["version"].as<String>();
-  } else {
-    // Fallback: maybe it's raw text?
-    serverVersion = responseBody;
-  }
-
-  Serial.print("Current: "); Serial.println(CURRENT_VERSION);
-  Serial.print("Server: "); Serial.println(serverVersion);
-
-  // Safety Check: Ignore HTML errors or long strings
-  if (serverVersion.length() > 10 || serverVersion.indexOf("Tunnel") != -1 || serverVersion.indexOf("50") != -1) {
-     Serial.println("Invalid version response. Skipping.");
-     return;
-  }
-
-  if (serverVersion.length() > 0 && serverVersion != CURRENT_VERSION) {
-    Serial.println("New version available! Updating...");
-    performUpdate(client);
-  } else {
-    Serial.println("No update needed.");
-  }
-}
+void connectMQTT();
+void sendGPSData(float lat, float lon, float speed, String source, int signal);
 
 void setup() {
-  // 1. Debug Serial
   Serial.begin(115200);
-  Serial.println("\nStarting Papaji GPS Tracker (Pro Mode)...");
+  Serial.println("\n=== Papaji GPS Tracker (MQTT Mode) ===");
 
-  // 2. Init SPIFFS (Offline Storage)
+  // Init SPIFFS
   if(!SPIFFS.begin(true)){
     Serial.println("SPIFFS Mount Failed");
   } else {
     Serial.println("SPIFFS Mounted");
   }
 
-  // 3. Enable Watchdog (Auto-restart if frozen)
+  // Watchdog
   esp_task_wdt_init(WDT_TIMEOUT, true);
   esp_task_wdt_add(NULL);
 
-  // 4. Start Serials
+  // Start Serials
   gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
   gsmSerial.begin(9600, SERIAL_8N1, GSM_RX, GSM_TX);
 
-  // 4. Initialize Modem
+  // Initialize Modem
   Serial.println("Initializing modem...");
   modem.restart();
   
-  // 5. Connect to GPRS
+  // Connect to GPRS
   connectToNetwork();
 
-  testInternet();
+  // Setup MQTT
+  mqtt.setServer(mqtt_server, mqtt_port);
+  mqtt.setBufferSize(512); // Increase buffer for JSON
   
-  Serial.println("Waiting 3s before server connection...");
-  delay(3000); 
+  // Connect to MQTT
+  connectMQTT();
 
-  // 6. Initial OTA Check
-  checkOTA();
+  Serial.println("Setup complete. Starting main loop...");
 }
 
 void connectToNetwork() {
   Serial.print("Connecting to APN: ");
   Serial.print(apn);
   if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
-    Serial.println(" fail. Retrying in 5s...");
+    Serial.println(" fail. Restarting...");
     delay(5000);
-    ESP.restart(); // Brute force fix: Restart if modem fails at boot
+    ESP.restart();
   }
   Serial.println(" success");
+  
+  // Print IP
+  Serial.print("Device IP: ");
+  Serial.println(modem.getLocalIP());
+}
+
+void connectMQTT() {
+  Serial.print("Connecting to MQTT broker...");
+  
+  int attempts = 0;
+  while (!mqtt.connected() && attempts < 5) {
+    if (mqtt.connect(mqtt_client_id)) {
+      Serial.println(" connected!");
+      // Publish a hello message
+      mqtt.publish("papaji/gps/status", "online");
+    } else {
+      Serial.print(" failed (");
+      Serial.print(mqtt.state());
+      Serial.println("). Retrying in 3s...");
+      delay(3000);
+      attempts++;
+    }
+  }
+  
+  if (!mqtt.connected()) {
+    Serial.println("MQTT connection failed after 5 attempts.");
+  }
 }
 
 void loop() {
-  // Reset Watchdog Timer (Feed the dog)
   esp_task_wdt_reset();
 
-  // 0. Check for OTA Updates
-  if (millis() - lastOtaCheck > otaInterval) {
-    checkConnection();
-    checkOTA();
-    lastOtaCheck = millis();
+  // Keep MQTT alive
+  if (!mqtt.connected()) {
+    connectMQTT();
   }
+  mqtt.loop();
 
-  // 1. Read GPS Data
+  // Read GPS
   while (gpsSerial.available() > 0) {
     gps.encode(gpsSerial.read());
   }
 
-  // 2. Smart Interval Logic
-  // If speed < 2 km/h (Parked), send every 5 mins (300,000 ms)
-  // If speed > 2 km/h (Moving), send every 5 seconds (5,000 ms)
+  // Dynamic Interval
   if (gps.speed.kmph() < 2.0) {
-    currentInterval = 300000; 
+    currentInterval = 300000; // 5 min if parked
   } else {
-    currentInterval = 5000;
+    currentInterval = 5000; // 5 sec if moving
   }
 
-  // 2.5 Smart Cornering Logic
+  // Cornering Detection
   bool forceSend = false;
   if (gps.location.isValid() && gps.speed.kmph() > 5.0) {
-      double currentHeading = gps.course.deg();
-      double diff = abs(currentHeading - lastHeading);
-      if (diff > 180) diff = 360 - diff; // Handle 359->1 transition
-      
-      if (diff > CORNER_THRESHOLD) {
-          forceSend = true;
-          Serial.println("Corner detected! Force sending.");
-      }
+    double currentHeading = gps.course.deg();
+    double diff = abs(currentHeading - lastHeading);
+    if (diff > 180) diff = 360 - diff;
+    
+    if (diff > CORNER_THRESHOLD) {
+      forceSend = true;
+      Serial.println("Corner detected!");
+    }
   }
 
-  // 3. Send Data
+  // Send Data
   if (millis() - lastSend > currentInterval || forceSend) {
-    checkConnection(); // Ensure we are online before trying
-
     float lat = 0, lon = 0, speed = 0;
     String source = "none";
-    int signalQuality = 0;
-
-    // Get Signal Strength (0-31)
-    signalQuality = modem.getSignalQuality();
+    int signalQuality = modem.getSignalQuality();
 
     if (gps.location.isValid()) {
+      lat = gps.location.lat();
+      lon = gps.location.lng();
       speed = gps.speed.kmph();
-      
-      // --- OPTIMIZATION: GPS DRIFT FILTER ---
-      // If moving very slowly (< 1 km/h), ignore small position changes
-      // This prevents "wiggling" when parked adding fake distance
-      if (speed < 1.0) {
-         speed = 0; // Force zero speed
-         // Keep previous lat/lon (don't update) unless we don't have one yet
-         if (lastHeading == 0) { 
-            lat = gps.location.lat();
-            lon = gps.location.lng();
-         } else {
-            // Use the last known good position (simulated here by not updating variables if we had global ones)
-            // For simplicity in this loop, we just send the current one but mark speed 0
-            lat = gps.location.lat();
-            lon = gps.location.lng();
-         }
-      } else {
-         lat = gps.location.lat();
-         lon = gps.location.lng();
-      }
-      
+      if (speed < 1.0) speed = 0;
       source = "gps";
-      lastHeading = gps.course.deg(); 
+      lastHeading = gps.course.deg();
     } else {
-      // Fallback to GSM
+      // GSM Fallback
       float gsmLat = 0, gsmLon = 0, accuracy = 0;
       int year = 0, month = 0, day = 0, time = 0;
       if (modem.getGsmLocation(&gsmLat, &gsmLon, &accuracy, &year, &month, &day, &time)) {
@@ -400,184 +191,41 @@ void loop() {
     }
 
     if (source != "none") {
-      bufferData(lat, lon, speed, source, signalQuality);
+      sendGPSData(lat, lon, speed, source, signalQuality);
     } else {
       Serial.println("No location fix.");
     }
-    
+
     lastSend = millis();
-    
-    // Flush immediately if forced (Cornering)
-    if (forceSend) {
-       flushBatch();
-    }
   }
 }
 
-void checkConnection() {
-  if (!modem.isGprsConnected()) {
-    Serial.println("Network lost! Reconnecting...");
-    modem.gprsConnect(apn, gprsUser, gprsPass);
-  }
-}
-
-// --- OFFLINE STORAGE FUNCTIONS ---
-
-void saveOffline(String data) {
-  File file = SPIFFS.open("/offline.txt", FILE_APPEND);
-  if(!file){
-    Serial.println("Failed to open file for appending");
+void sendGPSData(float lat, float lon, float speed, String source, int signal) {
+  if (!mqtt.connected()) {
+    Serial.println("MQTT not connected. Skipping send.");
     return;
   }
-  file.println(data);
-  file.close();
-  Serial.println("Data saved offline.");
-}
 
-bool sendRawJson(String jsonString) {
-  if (!client.connect(server, port)) {
-    return false;
-  }
-  client.print(String("POST ") + resource + " HTTP/1.1\r\n");
-  client.print(String("Host: ") + server + "\r\n");
-  client.println("Connection: close");
-  client.println("Content-Type: application/json");
-  client.print("Content-Length: ");
-  client.println(jsonString.length());
-  client.println();
-  client.println(jsonString);
-  
-  // Read Response for Remote Config
-  unsigned long timeout = millis();
-  while (client.connected() && millis() - timeout < 5000) {
-    if (client.available()) {
-      String line = client.readStringUntil('\n');
-      if (line == "\r") {
-        // Headers ended, read body
-        String body = client.readString();
-        body.trim();
-        
-        // Parse JSON Response
-        StaticJsonDocument<200> responseDoc;
-        DeserializationError error = deserializeJson(responseDoc, body);
-        
-        if (!error) {
-          if (responseDoc.containsKey("interval")) {
-            long newInterval = responseDoc["interval"];
-            if (newInterval >= 1000 && newInterval <= 3600000) {
-               currentInterval = newInterval;
-               Serial.println("Remote Config: Interval updated to " + String(newInterval));
-            }
-          }
-          if (responseDoc.containsKey("restart") && responseDoc["restart"] == true) {
-             Serial.println("Remote Config: Restarting...");
-             ESP.restart();
-          }
-        }
-        break;
-      }
-    }
-  }
-  client.stop();
-  return true;
-}
+  // Create JSON
+  StaticJsonDocument<256> doc;
+  doc["device_id"] = DEVICE_ID;
+  doc["latitude"] = lat;
+  doc["longitude"] = lon;
+  doc["speed_kmh"] = speed;
+  doc["source"] = source;
+  doc["signal"] = signal;
+  doc["battery"] = 4.0;
+  doc["timestamp"] = millis();
 
-void processOfflineData() {
-  if (!SPIFFS.exists("/offline.txt")) return;
+  char jsonBuffer[256];
+  serializeJson(doc, jsonBuffer);
 
-  // Rename to processing to prevent conflicts
-  SPIFFS.rename("/offline.txt", "/processing.txt");
-  
-  File file = SPIFFS.open("/processing.txt", FILE_READ);
-  if (!file) return;
+  Serial.print("Publishing: ");
+  Serial.println(jsonBuffer);
 
-  Serial.println("Syncing offline data...");
-  bool errorOccurred = false;
-  
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    line.trim();
-    if (line.length() > 0) {
-      if (sendRawJson(line)) {
-        Serial.print("."); // Success
-      } else {
-        // Upload failed! Stop and save everything back.
-        Serial.println("\nSync failed. Saving remaining data...");
-        
-        File backup = SPIFFS.open("/offline.txt", FILE_APPEND);
-        if (backup) {
-            backup.println(line); // Save the line that failed
-            while(file.available()) {
-                backup.println(file.readStringUntil('\n')); // Save the rest
-            }
-            backup.close();
-        }
-        errorOccurred = true;
-        break; 
-      }
-    }
-  }
-  file.close();
-  
-  // Only delete the processing file. 
-  // If errorOccurred is true, we already moved the rest back to offline.txt.
-  // If errorOccurred is false, we sent everything, so we are clean.
-  SPIFFS.remove("/processing.txt"); 
-  
-  if (!errorOccurred) {
-    Serial.println("\nSync complete. Memory cleaned.");
-  }
-}
-
-void bufferData(float lat, float lon, float speed, String source, int signal) {
-  Serial.println("Buffering data...");
-
-  // Add to Batch
-  JsonObject obj = batchArray.createNestedObject();
-  obj["device_id"] = DEVICE_ID;
-  obj["latitude"] = lat;
-  obj["longitude"] = lon;
-  obj["speed_kmh"] = speed;
-  obj["source"] = source; 
-  obj["signal"] = signal;
-  
-  // Read Battery Voltage (Optional: Add Voltage Divider on Pin 34)
-  // For now, we assume a healthy Li-ion battery (approx 4.0V)
-  // To make this real: float voltage = (analogRead(34) / 4095.0) * 7.2; 
-  obj["battery_voltage"] = 4.0; 
-
-  obj["timestamp"] = gps.time.value(); // Optional: Add timestamp if needed
-
-  Serial.print("Batch Size: "); Serial.println(batchArray.size());
-
-  if (batchArray.size() >= BATCH_SIZE) {
-    flushBatch();
-  }
-}
-
-void flushBatch() {
-  if (batchArray.size() == 0) return;
-
-  Serial.println("Flushing batch to server...");
-  checkConnection();
-
-  String jsonString;
-  serializeJson(batchArray, jsonString);
-
-  if (sendRawJson(jsonString)) {
-    Serial.println("Batch sent!");
-    batchArray.clear(); // Clear buffer
-    processOfflineData(); 
+  if (mqtt.publish(mqtt_topic, jsonBuffer)) {
+    Serial.println("✓ Sent via MQTT!");
   } else {
-    Serial.println("Connection failed. Saving batch offline.");
-    // Save the whole batch array as one line (or iterate)
-    // For simplicity, we save the raw array string
-    saveOffline(jsonString);
-    batchArray.clear();
+    Serial.println("✗ MQTT publish failed");
   }
-}
-
-// Replaces old sendData
-void sendData_OLD_UNUSED(float lat, float lon, float speed, String source, int signal) {
-  // ... kept for reference or deleted ...
 }
