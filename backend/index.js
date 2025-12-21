@@ -133,7 +133,7 @@ app.post('/api/telemetry', async (req, res) => {
     const device_id = points[0].device_id;
     const source = points[0].source;
 
-    console.log(`[${new Date().toISOString()}] Data received from ${device_id} (Source: ${source || 'gps'})`);
+    console.log(`[${new Date().toISOString()}] Data received from ${device_id} (Source: ${source || 'gps'}) - AWS Live`);
     
     // --- FEATURE 3: AUTO-LEARNING ROUTE DEVIATION ---
     // Check if we are in learning mode
