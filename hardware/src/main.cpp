@@ -18,13 +18,13 @@
 #include <SPIFFS.h> // SPI Flash File System
 
 // --- CONFIGURATION ---
-const char apn[]      = "www"; 
+const char apn[]      = "airtelgprs.com"; 
 const char gprsUser[] = "";
 const char gprsPass[] = "";
 
 // Backend Server Details
-const char server[]   = "192.168.1.5"; 
-const int  port       = 3000;
+const char server[]   = "f72095ed4e57cbdf-49-43-250-46.serveousercontent.com"; 
+const int  port       = 80;
 const char resource[] = "/api/telemetry";
 
 // OTA Details
@@ -33,18 +33,21 @@ const char ota_bin_url[]     = "/api/ota/firmware";
 const String CURRENT_VERSION = "1.0.0"; // Update this when releasing new firmware
 
 const String DEVICE_ID = "papaji_tractor_01";
-const int WDT_TIMEOUT = 30; // Restart if stuck for 30 seconds
+const int WDT_TIMEOUT = 120; // Restart if stuck for 120 seconds
 
-// --- PINS ---
-#define RXD2 16 
-#define TXD2 17 
-#define GSM_RX 4 
-#define GSM_TX 2 
+// --- PINS (Updated from test.ino) ---
+// GSM (SIM800L) - Uses UART2
+#define GSM_RX 16 
+#define GSM_TX 17 
+
+// GPS (NEO-6M) - Uses UART1
+#define GPS_RX 4 
+#define GPS_TX 5 
 
 // --- OBJECTS ---
 TinyGPSPlus gps;
-HardwareSerial gpsSerial(1); 
-HardwareSerial gsmSerial(2); 
+HardwareSerial gpsSerial(1); // UART1 for GPS
+HardwareSerial gsmSerial(2); // UART2 for GSM 
 
 TinyGsm modem(gsmSerial);
 TinyGsmClient client(modem);
@@ -80,6 +83,7 @@ String readHttpBody(TinyGsmClient& client) {
   bool headerEnded = false;
   unsigned long timeout = millis();
   
+  // 1. Skip Headers
   while (client.connected() && millis() - timeout < 10000) {
     if (client.available()) {
       String line = client.readStringUntil('\n');
@@ -90,9 +94,15 @@ String readHttpBody(TinyGsmClient& client) {
     }
   }
   
+  // 2. Read Body (with timeout for slow chunks)
   if (headerEnded) {
-    while (client.available()) {
-      body += (char)client.read();
+    timeout = millis();
+    while (client.connected() && millis() - timeout < 5000) {
+      if (client.available()) {
+        char c = client.read();
+        body += c;
+        timeout = millis(); // Reset timeout on data
+      }
     }
   }
   return body;
@@ -172,12 +182,50 @@ void performUpdate(TinyGsmClient& client) {
   }
 }
 
+void testInternet() {
+  Serial.println("Testing Internet Connectivity...");
+  
+  // 1. Check Signal Quality (0-31)
+  int csq = modem.getSignalQuality();
+  Serial.print("Signal Quality: "); Serial.print(csq); Serial.println(" (Min required: 10)");
+
+  // 2. Check IP Address
+  String localIP = modem.getLocalIP();
+  Serial.print("Device IP: "); Serial.println(localIP);
+
+  if (localIP == "0.0.0.0") {
+      Serial.println("ERR: No IP Address! APN might be wrong.");
+      return;
+  }
+
+  // 3. Test Connection
+  TinyGsmClient testClient(modem);
+  if (testClient.connect("www.google.com", 80)) {
+    Serial.println("Internet OK (Connected to google.com)");
+    testClient.stop();
+  } else {
+    Serial.println("Internet Failed! Check APN/SIM.");
+  }
+}
+
 void checkOTA() {
   Serial.println("Checking for updates...");
   TinyGsmClient client(modem);
 
-  if (!client.connect(server, port)) {
-    Serial.println("OTA: Connection failed");
+  // Retry connection 3 times
+  bool connected = false;
+  for (int i = 0; i < 3; i++) {
+    Serial.print("Connecting to server (Attempt "); Serial.print(i+1); Serial.println(")...");
+    if (client.connect(server, port)) {
+      connected = true;
+      break;
+    }
+    Serial.println("Connect failed. Retrying in 3s...");
+    delay(3000);
+  }
+
+  if (!connected) {
+    Serial.println("OTA: Connection failed after 3 attempts");
     return;
   }
 
@@ -186,12 +234,30 @@ void checkOTA() {
   client.print(String("Host: ") + server + "\r\n");
   client.print("Connection: close\r\n\r\n");
 
-  String serverVersion = readHttpBody(client);
-  serverVersion.trim();
+  String responseBody = readHttpBody(client);
+  responseBody.trim();
   client.stop();
+
+  // Parse JSON Version
+  String serverVersion = "";
+  StaticJsonDocument<200> doc;
+  DeserializationError error = deserializeJson(doc, responseBody);
+
+  if (!error && doc.containsKey("version")) {
+    serverVersion = doc["version"].as<String>();
+  } else {
+    // Fallback: maybe it's raw text?
+    serverVersion = responseBody;
+  }
 
   Serial.print("Current: "); Serial.println(CURRENT_VERSION);
   Serial.print("Server: "); Serial.println(serverVersion);
+
+  // Safety Check: Ignore HTML errors or long strings
+  if (serverVersion.length() > 10 || serverVersion.indexOf("Tunnel") != -1 || serverVersion.indexOf("50") != -1) {
+     Serial.println("Invalid version response. Skipping.");
+     return;
+  }
 
   if (serverVersion.length() > 0 && serverVersion != CURRENT_VERSION) {
     Serial.println("New version available! Updating...");
@@ -218,7 +284,7 @@ void setup() {
   esp_task_wdt_add(NULL);
 
   // 4. Start Serials
-  gpsSerial.begin(9600, SERIAL_8N1, RXD2, TXD2);
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
   gsmSerial.begin(9600, SERIAL_8N1, GSM_RX, GSM_TX);
 
   // 4. Initialize Modem
@@ -227,6 +293,11 @@ void setup() {
   
   // 5. Connect to GPRS
   connectToNetwork();
+
+  testInternet();
+  
+  Serial.println("Waiting 3s before server connection...");
+  delay(3000); 
 
   // 6. Initial OTA Check
   checkOTA();
