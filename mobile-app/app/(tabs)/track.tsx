@@ -94,15 +94,18 @@ export default function TrackScreen() {
       const history = await api.getHistory('papaji_tractor_01');
       
       if (history && history.length > 0) {
-        const route = history.map((p: any) => ({
+        // Filter only GPS points for playback as requested
+        const gpsOnly = history.filter((p: any) => p.source === 'gps');
+
+        const route = gpsOnly.map((p: any) => ({
           latitude: p.latitude,
           longitude: p.longitude
         }));
         
-        const lastPoint = route[route.length - 1];
+        const lastPoint = route.length > 0 ? route[route.length - 1] : null;
         const displayPoint = latestPoint && typeof latestPoint.latitude === 'number' && typeof latestPoint.longitude === 'number'
           ? { latitude: latestPoint.latitude, longitude: latestPoint.longitude }
-          : lastPoint;
+          : (lastPoint || { latitude: 30.7333, longitude: 76.7794 });
 
         setTrackData({
           route: route,
@@ -113,7 +116,7 @@ export default function TrackScreen() {
         });
         
         // If not playing, update the playback index to the end so the marker is at the latest position
-        if (!isPlaying) {
+        if (!isPlaying && route.length > 0) {
             setPlaybackIndex(route.length - 1);
         }
         
