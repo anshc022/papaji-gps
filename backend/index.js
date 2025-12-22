@@ -421,7 +421,8 @@ app.post('/api/sms/incoming', async (req, res) => {
         if (line.startsWith('+CMGL:')) {
             // Save previous if exists
             if (currentMsg) {
-                await supabase.from('sms_inbox').insert(currentMsg);
+                const { error } = await supabase.from('sms_inbox').insert(currentMsg);
+                if (error) console.error('SMS Insert Error:', error);
             }
             
             // Start new message
@@ -442,7 +443,8 @@ app.post('/api/sms/incoming', async (req, res) => {
     
     // Save last message
     if (currentMsg) {
-        await supabase.from('sms_inbox').insert(currentMsg);
+        const { error } = await supabase.from('sms_inbox').insert(currentMsg);
+        if (error) console.error('SMS Insert Error (Last):', error);
     }
 
     res.json({ success: true });
