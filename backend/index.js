@@ -493,4 +493,5 @@ function deg2rad(deg) { return deg * (Math.PI/180); }
 
 app.listen(PORT, () => {
   console.log(`Papaji GPS Backend running on port ${PORT}`);
+  console.log(`Deployment triggered at ${new Date().toISOString()}`);
 });
