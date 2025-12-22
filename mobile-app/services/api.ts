@@ -161,7 +161,11 @@ export const api = {
   getSmsInbox: async () => {
     try {
       const response = await fetch(`${BASE_URL}/api/admin/sms`);
-      if (!response.ok) throw new Error('Failed to fetch SMS');
+      if (!response.ok) {
+        const text = await response.text();
+        console.error(`API Error (getSmsInbox) Status: ${response.status}, Body: ${text}`);
+        throw new Error(`Failed to fetch SMS: ${response.status}`);
+      }
       return await response.json();
     } catch (error) {
       console.error('API Error (getSmsInbox):', error);
