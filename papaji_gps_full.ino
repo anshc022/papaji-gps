@@ -400,19 +400,53 @@ void checkSMS() {
   modem.sendAT("+CMGF=1"); // Text mode
   modem.waitResponse();
   
-  // Read only unread messages to avoid huge modem buffers / delays
+  // Read only unread messages
   modem.sendAT("+CMGL=\"REC UNREAD\"");
   if (modem.waitResponse(10000L, response) == 1) {
-    response.toLowerCase();
     
-    // Check if any message contains "loc"
-    if (response.indexOf("loc") != -1) {
-      Serial.println("SMS 'loc' command received!");
-      sendLocationSMS();
-      
-      // Delete all SMS to free memory
-      modem.sendAT("+CMGDA=\"DEL ALL\"");
-      modem.waitResponse();
+    // If we have messages (response contains +CMGL:)
+    if (response.indexOf("+CMGL:") != -1) {
+       Serial.println("SMS Received! Forwarding to server...");
+       
+       // 1. Forward to Server
+       DynamicJsonDocument doc(4096);
+       doc["device_id"] = DEVICE_ID;
+       doc["raw_response"] = response;
+       
+       String json;
+       serializeJson(doc, json);
+       
+       if (client.connect(server, port)) {
+          client.print(String("POST /api/sms/incoming HTTP/1.1\r\n"));
+          client.print(String("Host: ") + server + "\r\n");
+          client.println("Connection: close");
+          client.println("Content-Type: application/json");
+          client.print("Content-Length: ");
+          client.println(json.length());
+          client.println();
+          client.println(json);
+          
+          // Wait briefly for response to ensure sent
+          unsigned long timeout = millis();
+          while(client.connected() && millis() - timeout < 2000) {
+            if(client.available()) client.read();
+          }
+          client.stop();
+          Serial.println("SMS Forwarded.");
+       } else {
+          Serial.println("Failed to connect to server to forward SMS.");
+       }
+
+       // 2. Handle Local Commands
+       response.toLowerCase();
+       if (response.indexOf("loc") != -1) {
+          Serial.println("SMS 'loc' command received!");
+          sendLocationSMS();
+       }
+       
+       // 3. Delete all SMS to free memory
+       modem.sendAT("+CMGDA=\"DEL ALL\"");
+       modem.waitResponse();
     }
   }
 }

@@ -400,6 +400,74 @@ app.post('/api/admin/reconnect-device', (req, res) => {
     res.json({ success: true });
 });
 
+// --- 6. SMS Management ---
+
+// POST /api/sms/incoming (From Device)
+app.post('/api/sms/incoming', async (req, res) => {
+    const { device_id, raw_response } = req.body;
+    
+    if (!raw_response) return res.status(400).json({ error: 'No data' });
+
+    addLog('SMS', `Raw SMS data received from ${device_id}`);
+
+    // Simple Parser for AT+CMGL response
+    // Format: +CMGL: 1,"REC UNREAD","+9199...",,"23/12/23,10:00:00+22"\r\nMessage Content
+    
+    const lines = raw_response.split('\n');
+    let currentMsg = null;
+
+    for (let line of lines) {
+        line = line.trim();
+        if (line.startsWith('+CMGL:')) {
+            // Save previous if exists
+            if (currentMsg) {
+                await supabase.from('sms_inbox').insert(currentMsg);
+            }
+            
+            // Start new message
+            // Extract Sender
+            const parts = line.split(',');
+            let sender = parts[2] ? parts[2].replace(/"/g, '') : 'Unknown';
+            
+            currentMsg = {
+                device_id: device_id || 'unknown',
+                sender: sender,
+                message: '',
+                received_at: new Date().toISOString()
+            };
+        } else if (currentMsg && line.length > 0 && line !== 'OK') {
+            currentMsg.message += line + ' ';
+        }
+    }
+    
+    // Save last message
+    if (currentMsg) {
+        await supabase.from('sms_inbox').insert(currentMsg);
+    }
+
+    res.json({ success: true });
+});
+
+// GET /api/admin/sms (For App)
+app.get('/api/admin/sms', async (req, res) => {
+    const { data, error } = await supabase
+        .from('sms_inbox')
+        .select('*')
+        .order('received_at', { ascending: false })
+        .limit(50);
+        
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+});
+
+// DELETE /api/admin/sms/:id (For App)
+app.delete('/api/admin/sms/:id', async (req, res) => {
+    const { id } = req.params;
+    const { error } = await supabase.from('sms_inbox').delete().eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true });
+});
+
 // --- Helpers ---
 
 function getISTDateRange(dateStr) {

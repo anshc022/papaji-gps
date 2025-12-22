@@ -156,5 +156,29 @@ export const api = {
       console.error('API Error (reconnectDevice):', error);
       throw error;
     }
+  },
+
+  getSmsInbox: async () => {
+    try {
+      const response = await fetch(`${BASE_URL}/api/admin/sms`);
+      if (!response.ok) throw new Error('Failed to fetch SMS');
+      return await response.json();
+    } catch (error) {
+      console.error('API Error (getSmsInbox):', error);
+      throw error;
+    }
+  },
+
+  deleteSms: async (id: number) => {
+    try {
+      const response = await fetch(`${BASE_URL}/api/admin/sms/${id}`, {
+        method: 'DELETE'
+      });
+      if (!response.ok) throw new Error('Failed to delete SMS');
+      return await response.json();
+    } catch (error) {
+      console.error('API Error (deleteSms):', error);
+      throw error;
+    }
   }
 };

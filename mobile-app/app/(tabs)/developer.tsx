@@ -24,11 +24,12 @@ export default function DeveloperScreen() {
   const [pin, setPin] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
   const [serverLogs, setServerLogs] = useState<any[]>([]);
+  const [smsInbox, setSmsInbox] = useState<any[]>([]);
   const [dbStats, setDbStats] = useState<any>(null);
   const [serverStatus, setServerStatus] = useState<string>('Checking...');
   const [serverInfo, setServerInfo] = useState<any>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [showServerLogs, setShowServerLogs] = useState(true);
+  const [logViewMode, setLogViewMode] = useState<'server' | 'app' | 'sms'>('server');
 
   const addLog = (msg: string) => {
     const time = new Date().toLocaleTimeString();
@@ -81,6 +82,15 @@ export default function DeveloperScreen() {
       }
     } catch (e: any) {
       addLog(`Failed to fetch server logs: ${e.message}`);
+    }
+
+    // Fetch SMS Inbox
+    try {
+      const sms = await api.getSmsInbox();
+      setSmsInbox(sms || []);
+      addLog(`Fetched ${sms?.length || 0} SMS`);
+    } catch (e: any) {
+      addLog(`Failed to fetch SMS: ${e.message}`);
     }
 
     setRefreshing(false);
@@ -178,6 +188,16 @@ export default function DeveloperScreen() {
         }
       ]
     );
+  };
+
+  const handleDeleteSms = async (id: number) => {
+    try {
+      await api.deleteSms(id);
+      setSmsInbox(prev => prev.filter(s => s.id !== id));
+      addLog('SMS Deleted');
+    } catch (e: any) {
+      addLog(`Failed to delete SMS: ${e.message}`);
+    }
   };
 
   const clearLogs = () => {
@@ -350,25 +370,32 @@ export default function DeveloperScreen() {
         {/* Logs Toggle */}
         <View className="flex-row gap-2 mb-4">
           <TouchableOpacity 
-            onPress={() => setShowServerLogs(true)} 
-            className={`flex-1 py-2 rounded-xl items-center ${showServerLogs ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
+            onPress={() => setLogViewMode('server')} 
+            className={`flex-1 py-2 rounded-xl items-center ${logViewMode === 'server' ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
           >
-            <Text className={`font-bold ${showServerLogs ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>Server Logs</Text>
+            <Text className={`font-bold ${logViewMode === 'server' ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>Server</Text>
           </TouchableOpacity>
           <TouchableOpacity 
-            onPress={() => setShowServerLogs(false)} 
-            className={`flex-1 py-2 rounded-xl items-center ${!showServerLogs ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
+            onPress={() => setLogViewMode('sms')} 
+            className={`flex-1 py-2 rounded-xl items-center ${logViewMode === 'sms' ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
           >
-            <Text className={`font-bold ${!showServerLogs ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>App Logs</Text>
+            <Text className={`font-bold ${logViewMode === 'sms' ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>SMS ({smsInbox.length})</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            onPress={() => setLogViewMode('app')} 
+            className={`flex-1 py-2 rounded-xl items-center ${logViewMode === 'app' ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
+          >
+            <Text className={`font-bold ${logViewMode === 'app' ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>App</Text>
           </TouchableOpacity>
         </View>
 
         {/* Logs */}
         <View className="bg-black rounded-2xl p-4">
           <Text className="text-green-400 font-mono text-xs mb-2">
-            📋 {showServerLogs ? `Server Logs (${serverLogs.length})` : `App Logs (${logs.length})`}
+            📋 {logViewMode === 'server' ? `Server Logs (${serverLogs.length})` : logViewMode === 'sms' ? `SMS Inbox (${smsInbox.length})` : `App Logs (${logs.length})`}
           </Text>
-          {showServerLogs ? (
+          
+          {logViewMode === 'server' && (
             serverLogs.length === 0 ? (
               <Text className="text-gray-500 font-mono text-xs">No server logs yet...</Text>
             ) : (
@@ -381,7 +408,30 @@ export default function DeveloperScreen() {
                 </View>
               ))
             )
-          ) : (
+          )}
+
+          {logViewMode === 'sms' && (
+            smsInbox.length === 0 ? (
+              <Text className="text-gray-500 font-mono text-xs">No SMS received...</Text>
+            ) : (
+              smsInbox.map((sms, i) => (
+                <View key={i} className="mb-3 border-b border-gray-800 pb-2">
+                  <View className="flex-row justify-between items-start">
+                    <View className="flex-1">
+                      <Text className="text-yellow-400 font-mono text-xs font-bold">{sms.sender}</Text>
+                      <Text className="text-gray-500 font-mono text-[10px]">{new Date(sms.received_at).toLocaleString()}</Text>
+                      <Text className="text-white font-mono text-xs mt-1">{sms.message}</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => handleDeleteSms(sms.id)} className="bg-red-900/50 px-2 py-1 rounded ml-2">
+                      <Text className="text-red-400 text-[10px]">DEL</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))
+            )
+          )}
+
+          {logViewMode === 'app' && (
             logs.length === 0 ? (
               <Text className="text-gray-500 font-mono text-xs">No logs yet...</Text>
             ) : (
