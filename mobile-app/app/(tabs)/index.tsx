@@ -4,7 +4,7 @@ import { useTheme } from '@/context/ThemeContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useRef, useState, useEffect } from 'react';
 import { Image, Text, TouchableOpacity, View, ToastAndroid, Platform } from 'react-native';
-import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '@/services/api';
 import * as Speech from 'expo-speech';
@@ -86,6 +86,7 @@ export default function DashboardScreen() {
   });
 
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
+  const [gsmPoints, setGsmPoints] = useState<any[]>([]);
   const [stops, setStops] = useState<any[]>([]);
   const [hasCentered, setHasCentered] = useState(false);
 
@@ -93,11 +94,18 @@ export default function DashboardScreen() {
     try {
       const history = await api.getHistory('papaji_tractor_01');
       if (history && history.length > 0) {
-        const route = history.map((p: any) => ({
+        // Separate GPS and GSM points
+        const gpsRoute = history.filter((p: any) => p.source !== 'gsm').map((p: any) => ({
           latitude: p.latitude,
           longitude: p.longitude
         }));
-        setRouteCoordinates(route);
+        const gsmRoute = history.filter((p: any) => p.source === 'gsm').map((p: any) => ({
+          latitude: p.latitude,
+          longitude: p.longitude
+        }));
+        
+        setRouteCoordinates(gpsRoute);
+        setGsmPoints(gsmRoute);
         
         // Calculate Stops (Gaps > 5 mins)
         let rawStops = [];
@@ -150,7 +158,9 @@ export default function DashboardScreen() {
             time: s.timeLabel
         })));
 
-        const lastPoint = route[route.length - 1];
+        // Use last point from history (could be GPS or GSM)
+        const lastHistoryPoint = history[history.length - 1];
+        const lastPoint = { latitude: lastHistoryPoint.latitude, longitude: lastHistoryPoint.longitude };
         setTractorLocation(lastPoint);
 
         // Auto-center on first load
@@ -301,11 +311,33 @@ export default function DashboardScreen() {
         customMapStyle={isDark ? darkMapStyle : []}
         mapType={mapType}
       >
+        {/* GPS Route - Orange */}
         <Polyline
           coordinates={routeCoordinates}
           strokeColor="#FF5500"
           strokeWidth={4}
         />
+        
+        {/* GSM Route - Purple (Cell Tower Location) */}
+        {gsmPoints.length > 0 && (
+          <Polyline
+            coordinates={gsmPoints.map(p => ({ latitude: p.latitude, longitude: p.longitude }))}
+            strokeColor="#9333EA"
+            strokeWidth={3}
+            lineDashPattern={[10, 5]}
+          />
+        )}
+        
+        {/* GSM Point Markers - Purple dots */}
+        {gsmPoints.map((point, index) => (
+          <Marker 
+            key={`gsm-${index}`}
+            coordinate={{ latitude: point.latitude, longitude: point.longitude }}
+            anchor={{ x: 0.5, y: 0.5 }}
+          >
+            <View className="bg-purple-600 w-3 h-3 rounded-full border border-white" />
+          </Marker>
+        ))}
         
         {stops.map((stop, index) => (
           <Marker 
@@ -409,6 +441,22 @@ export default function DashboardScreen() {
               <MaterialCommunityIcons name={getThemeIcon()} size={24} color={isDark ? "white" : "black"} />
             </TouchableOpacity>
           </Animated.View>
+          
+          {/* Map Legend */}
+          {gsmPoints.length > 0 && (
+            <Animated.View entering={FadeIn.delay(500)} className="bg-white/90 dark:bg-dark-card/90 px-3 py-2 rounded-xl mt-2">
+              <View className="flex-row items-center gap-3">
+                <View className="flex-row items-center gap-1">
+                  <View className="w-4 h-1 bg-[#FF5500] rounded" />
+                  <Text className="text-[10px] text-black dark:text-white">GPS</Text>
+                </View>
+                <View className="flex-row items-center gap-1">
+                  <View className="w-4 h-1 bg-purple-600 rounded" style={{ borderStyle: 'dashed' }} />
+                  <Text className="text-[10px] text-black dark:text-white">GSM</Text>
+                </View>
+              </View>
+            </Animated.View>
+          )}
         </View>
       </SafeAreaView>
 

@@ -109,6 +109,8 @@ app.post('/api/telemetry', async (req, res) => {
         battery: p.battery_voltage || 4.0,
         source: p.source || 'gps',
         signal: p.signal || 0,
+        hdop: p.hdop || null,           // GPS accuracy (lower = better)
+        satellites: p.satellites || 0,  // Satellite count
         created_at: createdAt
       };
     });
@@ -160,7 +162,7 @@ app.get('/api/history', async (req, res) => {
 
   const { data, error } = await supabase
     .from('tracking_history')
-    .select('latitude, longitude, speed, created_at')
+    .select('latitude, longitude, speed, created_at, source, hdop, satellites')
     .eq('device_id', device_id)
     .gte('created_at', start)
     .lte('created_at', end)
@@ -211,7 +213,7 @@ app.get('/api/stats', async (req, res) => {
 
   const { data, error } = await supabase
     .from('tracking_history')
-    .select('latitude, longitude, speed, created_at, source')
+    .select('latitude, longitude, speed, created_at, source, hdop, satellites')
     .eq('device_id', device_id)
     .gte('created_at', start)
     .order('created_at', { ascending: true });

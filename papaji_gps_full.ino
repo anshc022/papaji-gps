@@ -56,7 +56,7 @@ JsonArray batchArray = batchDoc.to<JsonArray>();
 
 // Forward Declarations
 void connectToNetwork();
-void bufferData(float lat, float lon, float speed, String source, int signal);
+void bufferData(float lat, float lon, float speed, String source, int signal, float hdop, int sats);
 void flushBatch();
 bool sendRawJson(String jsonString);
 void saveOffline(String data);
@@ -140,6 +140,8 @@ void loop() {
     if (!modem.isGprsConnected()) connectToNetwork();
 
     float lat = 0, lon = 0, speed = 0;
+    float hdop = 99.0;  // GPS accuracy (99 = no fix)
+    int satellites = 0;
     String source = "none";
     int signalQuality = modem.getSignalQuality();
 
@@ -168,7 +170,13 @@ void loop() {
       }
       
       source = "gps";
-      lastHeading = gps.course.deg(); 
+      lastHeading = gps.course.deg();
+      
+      // Get GPS accuracy info
+      if (gps.hdop.isValid()) hdop = gps.hdop.hdop();
+      if (gps.satellites.isValid()) satellites = gps.satellites.value();
+      
+      Serial.printf("GPS: %.6f, %.6f | HDOP: %.1f | Sats: %d\n", lat, lon, hdop, satellites);
     } else {
       // GSM Fallback
       float gsmLat = 0, gsmLon = 0, accuracy = 0;
@@ -181,11 +189,11 @@ void loop() {
     }
 
     if (source != "none") {
-      bufferData(lat, lon, speed, source, signalQuality);
+      bufferData(lat, lon, speed, source, signalQuality, hdop, satellites);
     } else {
       // Heartbeat
       if (millis() - lastSend > 60000) {
-         bufferData(0, 0, 0, "heartbeat", signalQuality);
+         bufferData(0, 0, 0, "heartbeat", signalQuality, 99.0, 0);
          lastSend = millis();
       }
     }
@@ -254,7 +262,7 @@ void processOfflineData() {
   SPIFFS.remove("/processing.txt"); 
 }
 
-void bufferData(float lat, float lon, float speed, String source, int signal) {
+void bufferData(float lat, float lon, float speed, String source, int signal, float hdop, int sats) {
   JsonObject obj = batchArray.createNestedObject();
   obj["device_id"] = DEVICE_ID;
   obj["latitude"] = lat;
@@ -262,6 +270,8 @@ void bufferData(float lat, float lon, float speed, String source, int signal) {
   obj["speed_kmh"] = speed;
   obj["source"] = source; 
   obj["signal"] = signal;
+  obj["hdop"] = hdop;           // GPS accuracy (lower = better, <2 = excellent)
+  obj["satellites"] = sats;     // Number of satellites used
   obj["battery_voltage"] = 4.0; 
 
   if (batchArray.size() >= BATCH_SIZE) flushBatch();
