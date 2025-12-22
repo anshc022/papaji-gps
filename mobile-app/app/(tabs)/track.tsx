@@ -31,7 +31,7 @@ export default function TrackScreen() {
 
   // Playback Logic
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval> | undefined;
     
     if (isPlaying && trackData.route.length > 0) {
       interval = setInterval(() => {
@@ -45,7 +45,9 @@ export default function TrackScreen() {
       }, 200); // Fast playback (200ms per point)
     }
 
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [isPlaying, trackData.route]);
 
   // Auto-center map during playback
@@ -64,7 +66,7 @@ export default function TrackScreen() {
   useEffect(() => {
     loadTrackData();
 
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval> | undefined;
     if (selectedDate === 'Today' && !isPlaying) {
       interval = setInterval(loadTrackData, 5000);
     }
@@ -78,6 +80,14 @@ export default function TrackScreen() {
     try {
       // 1. Get Stats for Distance/Speed
       const stats = await api.getStats('papaji_tractor_01');
+
+      // 1b. Get best latest point (prefers recent GPS)
+      let latestPoint: any = null;
+      try {
+        latestPoint = await api.getLatest('papaji_tractor_01');
+      } catch (e) {
+        // Fall back to history-derived last point
+      }
       
       // 2. Get History for Route (Points)
       // Note: In a real app, you'd pass the selectedDate to the API
@@ -90,13 +100,16 @@ export default function TrackScreen() {
         }));
         
         const lastPoint = route[route.length - 1];
+        const displayPoint = latestPoint && typeof latestPoint.latitude === 'number' && typeof latestPoint.longitude === 'number'
+          ? { latitude: latestPoint.latitude, longitude: latestPoint.longitude }
+          : lastPoint;
 
         setTrackData({
           route: route,
           time: 'Active', 
           distance: `${stats.total_distance_km} km`,
           speed: `${stats.max_speed} km/h (Max)`,
-          location: lastPoint
+          location: displayPoint
         });
         
         // If not playing, update the playback index to the end so the marker is at the latest position
@@ -107,8 +120,8 @@ export default function TrackScreen() {
         // Update map region to center on tractor (only on first load or if following live)
         if (!isPlaying && playbackIndex === 0) {
             mapRef.current?.animateToRegion({
-              latitude: lastPoint.latitude,
-              longitude: lastPoint.longitude,
+              latitude: displayPoint.latitude,
+              longitude: displayPoint.longitude,
               latitudeDelta: 0.005,
               longitudeDelta: 0.005
             }, 1000);
@@ -326,7 +339,7 @@ export default function TrackScreen() {
             <View 
               key={i} 
               className={`flex-1 bg-primary rounded-full`}
-              style={{ height: Math.random() * 100 + '%' }}
+              style={{ height: Math.max(2, Math.random() * 32) }}
             />
           ))}
         </View>

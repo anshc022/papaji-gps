@@ -33,6 +33,21 @@ export const api = {
   },
 
   /**
+   * Get best latest point (prefers recent GPS over GSM)
+   */
+  getLatest: async (deviceId: string) => {
+    try {
+      const response = await fetch(`${BASE_URL}/api/latest?device_id=${deviceId}`);
+      if (response.status === 404) return null; // Handle no data gracefully
+      if (!response.ok) throw new Error('Network response was not ok');
+      return await response.json();
+    } catch (error) {
+      console.error('API Error (getLatest):', error);
+      throw error;
+    }
+  },
+
+  /**
    * Run system diagnosis and auto-repair check
    */
   diagnoseSystem: async (deviceId: string) => {

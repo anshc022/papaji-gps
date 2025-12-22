@@ -26,6 +26,10 @@ const char resource[] = "/api/telemetry";
 const String DEVICE_ID = "papaji_tractor_01";
 const int WDT_TIMEOUT = 120; 
 
+// --- Network Config ---
+unsigned long lastReconnectAttempt = 0;
+const unsigned long RECONNECT_INTERVAL = 30000; // Try reconnecting every 30s
+
 // --- PINS ---
 #define GSM_RX 16 
 #define GSM_TX 17 
@@ -45,6 +49,13 @@ unsigned long currentInterval = 5000;
 unsigned long lastSMSCheck = 0;
 const unsigned long SMS_CHECK_INTERVAL = 10000; // Check SMS every 10 seconds 
 
+// Network Reconnection
+unsigned long lastReconnectAttempt = 0;
+const unsigned long RECONNECT_DELAY = 15000; // Try to reconnect every 15s if failed
+
+// Alerts
+void sendAlertSMS(String message);
+
 // Drift Filter & Cornering
 double lastHeading = 0;
 double lastLat = 0; 
@@ -58,6 +69,8 @@ JsonArray batchArray = batchDoc.to<JsonArray>();
 
 // Forward Declarations
 void connectToNetwork();
+void maintainNetwork(); // NEW
+void sendSMS(String number, String message); // NEW
 void bufferData(float lat, float lon, float speed, String source, int signal, float hdop, int sats);
 void flushBatch();
 bool sendRawJson(String jsonString);
@@ -68,6 +81,13 @@ void sendLocationSMS();
 
 // SMS Config
 const char* OWNER_PHONE = "+919939630600";
+
+// GPS Quality / Freshness
+const unsigned long GPS_MAX_AGE_MS = 10000;   // consider GPS stale after 10s without new data
+const int GPS_MIN_SATS = 4;                  // minimum satellites for "trusted" fix
+const float GPS_MAX_HDOP = 8.0;              // higher = less accurate
+
+bool hasFreshGpsFix();
 
 void setup() {
   Serial.begin(115200);
@@ -127,6 +147,9 @@ void loop() {
     gps.encode(gpsSerial.read());
   }
 
+  // 1. Non-Blocking Network Maintenance
+  maintainNetwork();
+
   // Check for incoming SMS
   if (millis() - lastSMSCheck > SMS_CHECK_INTERVAL) {
     checkSMS();
@@ -134,11 +157,12 @@ void loop() {
   }
 
   // Smart Interval
-  currentInterval = (gps.speed.kmph() < 2.0) ? 10000 : 5000;
+  // Use GPS speed only when we have a fresh fix; otherwise use a safer interval.
+  currentInterval = (hasFreshGpsFix() && gps.speed.kmph() >= 2.0) ? 5000 : 10000;
 
   // Smart Cornering
   bool forceSend = false;
-  if (gps.location.isValid() && gps.speed.kmph() > 5.0) {
+  if (hasFreshGpsFix() && gps.speed.kmph() > 5.0) {
       double currentHeading = gps.course.deg();
       double diff = abs(currentHeading - lastHeading);
       if (diff > 180) diff = 360 - diff;
@@ -150,7 +174,7 @@ void loop() {
   }
 
   if (millis() - lastSend > currentInterval || forceSend) {
-    if (!modem.isGprsConnected()) connectToNetwork();
+    // REMOVED BLOCKING CONNECT: if (!modem.isGprsConnected()) connectToNetwork();
 
     float lat = 0, lon = 0, speed = 0;
     float hdop = 99.0;  // GPS accuracy (99 = no fix)
@@ -158,7 +182,7 @@ void loop() {
     String source = "none";
     int signalQuality = modem.getSignalQuality();
 
-    if (gps.location.isValid()) {
+    if (hasFreshGpsFix()) {
       speed = gps.speed.kmph();
       double currentLat = gps.location.lat();
       double currentLon = gps.location.lng();
@@ -189,15 +213,28 @@ void loop() {
       if (gps.hdop.isValid()) hdop = gps.hdop.hdop();
       if (gps.satellites.isValid()) satellites = gps.satellites.value();
       
-      Serial.printf("GPS: %.6f, %.6f | HDOP: %.1f | Sats: %d\n", lat, lon, hdop, satellites);
+      Serial.printf("GPS FIX: %.6f, %.6f | HDOP: %.1f | Sats: %d\n", lat, lon, hdop, satellites);
     } else {
       // GSM Fallback
+      // Explicitly reset variables to ensure no GPS leakage
       float gsmLat = 0, gsmLon = 0, accuracy = 0;
       int year = 0, month = 0, day = 0, time = 0;
+      
+      Serial.println("GPS Lost/Stale. Requesting GSM Location...");
+      
       if (modem.getGsmLocation(&gsmLat, &gsmLon, &accuracy, &year, &month, &day, &time)) {
         lat = gsmLat;
         lon = gsmLon;
         source = "gsm";
+        
+        // Debug: Check if GSM is identical to last GPS (Suspicious)
+        if (abs(lat - lastLat) < 0.00001 && abs(lon - lastLon) < 0.00001) {
+             Serial.println("WARNING: GSM Location appears identical to last GPS!");
+        }
+        
+        Serial.printf("GSM FIX: %.6f, %.6f | Accuracy: %.1fm\n", lat, lon, accuracy);
+      } else {
+        Serial.println("GSM Location Failed.");
       }
     }
 
@@ -225,7 +262,11 @@ void saveOffline(String data) {
 }
 
 bool sendRawJson(String jsonString) {
-  if (!client.connect(server, port)) return false;
+  if (!client.connect(server, port)) {
+    Serial.println("Server connect failed. Resetting GPRS...");
+    modem.gprsDisconnect(); // Force disconnect so maintainNetwork() can reconnect
+    return false;
+  }
   
   client.print(String("POST ") + resource + " HTTP/1.1\r\n");
   client.print(String("Host: ") + server + "\r\n");
@@ -236,14 +277,28 @@ bool sendRawJson(String jsonString) {
   client.println();
   client.println(jsonString);
   
+  // Verify HTTP status (treat non-2xx as send failure so offline retry works)
+  bool ok = false;
   unsigned long timeout = millis();
-  while (client.connected() && millis() - timeout < 5000) {
+  while (client.connected() && millis() - timeout < 7000) {
     if (client.available()) {
-      client.readStringUntil('\n'); // Read headers
+      String statusLine = client.readStringUntil('\n');
+      statusLine.trim();
+      if (statusLine.indexOf("200") != -1 || statusLine.indexOf("201") != -1) ok = true;
       break;
     }
   }
   client.stop();
+  return ok;
+}
+
+bool hasFreshGpsFix() {
+  if (!gps.location.isValid()) return false;
+  if (gps.location.age() > GPS_MAX_AGE_MS) return false;
+
+  if (gps.satellites.isValid() && gps.satellites.value() < GPS_MIN_SATS) return false;
+  if (gps.hdop.isValid() && gps.hdop.hdop() > GPS_MAX_HDOP) return false;
+
   return true;
 }
 
@@ -254,7 +309,6 @@ void processOfflineData() {
   File file = SPIFFS.open("/processing.txt", FILE_READ);
   if (!file) return;
 
-  bool errorOccurred = false;
   while (file.available()) {
     String line = file.readStringUntil('\n');
     line.trim();
@@ -266,7 +320,6 @@ void processOfflineData() {
             while(file.available()) backup.println(file.readStringUntil('\n'));
             backup.close();
         }
-        errorOccurred = true;
         break; 
       }
     }
@@ -293,12 +346,13 @@ void bufferData(float lat, float lon, float speed, String source, int signal, fl
 void flushBatch() {
   if (batchArray.size() == 0) return;
 
-  if (!modem.isGprsConnected()) connectToNetwork();
+  // REMOVED BLOCKING CONNECT: if (!modem.isGprsConnected()) connectToNetwork();
 
   String jsonString;
   serializeJson(batchArray, jsonString);
 
-  if (sendRawJson(jsonString)) {
+  // Only try to send if connected. If not, save offline immediately.
+  if (modem.isGprsConnected() && sendRawJson(jsonString)) {
     batchArray.clear(); 
     processOfflineData(); 
   } else {
@@ -315,7 +369,8 @@ void checkSMS() {
   modem.sendAT("+CMGF=1"); // Text mode
   modem.waitResponse();
   
-  modem.sendAT("+CMGL=\"ALL\""); // List all messages
+  // Read only unread messages to avoid huge modem buffers / delays
+  modem.sendAT("+CMGL=\"REC UNREAD\"");
   if (modem.waitResponse(10000L, response) == 1) {
     response.toLowerCase();
     
@@ -334,7 +389,7 @@ void checkSMS() {
 void sendLocationSMS() {
   String message;
   
-  if (gps.location.isValid()) {
+  if (hasFreshGpsFix()) {
     float lat = gps.location.lat();
     float lon = gps.location.lng();
     float spd = gps.speed.kmph();
@@ -354,8 +409,18 @@ void sendLocationSMS() {
     
     Serial.println("Sending GPS location via SMS...");
   } else {
-    message = "Papaji Tractor:\nGPS signal not available. Please try again later.";
-    Serial.println("GPS not available, sending error SMS...");
+    // GSM fallback for SMS if GPS is not currently fresh
+    float gsmLat = 0, gsmLon = 0, accuracy = 0;
+    int year = 0, month = 0, day = 0, time = 0;
+    if (modem.getGsmLocation(&gsmLat, &gsmLon, &accuracy, &year, &month, &day, &time)) {
+      message = "Papaji Tractor (GSM backup):\n";
+      message += "https://maps.google.com/?q=" + String(gsmLat, 6) + "," + String(gsmLon, 6) + "\n";
+      message += "Cell accuracy: " + String(accuracy, 0) + " m";
+      Serial.println("GPS not fresh, sending GSM location via SMS...");
+    } else {
+      message = "Papaji Tractor:\nGPS not available and GSM location failed. Please try again later.";
+      Serial.println("GPS not available and GSM fallback failed, sending error SMS...");
+    }
   }
   
   // Send SMS
@@ -372,5 +437,37 @@ void sendLocationSMS() {
     } else {
       Serial.println("SMS send failed!");
     }
+  }
+}
+
+// ============ NEW FEATURES ============
+
+void maintainNetwork() {
+  if (modem.isGprsConnected()) return;
+
+  if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL) {
+    lastReconnectAttempt = millis();
+    Serial.println("Network disconnected. Attempting background reconnect...");
+    
+    // Short check for network registration (1s timeout instead of 60s)
+    if (!modem.isNetworkConnected()) {
+       modem.waitForNetwork(1000L);
+    }
+    
+    if (modem.isNetworkConnected()) {
+       // Try to connect GPRS
+       modem.gprsConnect(apn, gprsUser, gprsPass);
+    }
+  }
+}
+
+void sendSMS(String number, String message) {
+  modem.sendAT("+CMGF=1"); 
+  modem.waitResponse();
+  modem.sendAT("+CMGS=\"" + number + "\"");
+  if (modem.waitResponse(5000L, ">") == 1) {
+    modem.stream.print(message);
+    modem.stream.write(0x1A);
+    modem.waitResponse(10000L);
   }
 }

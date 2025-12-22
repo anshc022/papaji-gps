@@ -28,41 +28,46 @@ function addLog(type, message) {
 app.use(cors());
 app.use(express.json());
 
-// --- Helper: Send Push Notification ---
-async function sendPushNotification(deviceId, title, body) {
-  try {
-    // 1. Get Token from DB
-    const { data, error } = await supabase
-      .from('device_tokens')
-      .select('token')
-      .eq('device_id', deviceId)
-      .single();
+async function getBestLatestPoint(deviceId, opts = {}) {
+  const gpsPreferredWindowMin = Number.isFinite(opts.gpsPreferredWindowMin)
+    ? opts.gpsPreferredWindowMin
+    : 3;
 
-    if (error || !data || !data.token) return;
+  const { data: lastAnyPointData, error: anyErr } = await supabase
+    .from('tracking_history')
+    .select('created_at, source, signal, hdop, satellites, latitude, longitude, speed')
+    .eq('device_id', deviceId)
+    .neq('source', 'heartbeat')
+    .order('created_at', { ascending: false })
+    .limit(1);
 
-    // 2. Send to Expo
-    const message = {
-      to: data.token,
-      sound: 'default',
-      title: title,
-      body: body,
-      data: { someData: 'goes here' },
-    };
+  if (anyErr) return { error: anyErr, chosen: null, decision: 'error' };
+  
+  const lastAnyPoint = (lastAnyPointData && lastAnyPointData.length > 0) ? lastAnyPointData[0] : null;
+  if (!lastAnyPoint) return { error: null, chosen: null, decision: 'no_data' };
 
-    await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Accept-encoding': 'gzip, deflate',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(message),
-    });
+  const { data: lastGpsPointData } = await supabase
+    .from('tracking_history')
+    .select('created_at, source, signal, hdop, satellites, latitude, longitude, speed')
+    .eq('device_id', deviceId)
+    .eq('source', 'gps')
+    .order('created_at', { ascending: false })
+    .limit(1);
     
-    console.log(`[PUSH] Sent to ${deviceId}: ${title}`);
-  } catch (e) {
-    console.error('[PUSH] Error:', e);
+  const lastGpsPoint = (lastGpsPointData && lastGpsPointData.length > 0) ? lastGpsPointData[0] : null;
+
+  let chosen = lastAnyPoint;
+  let decision = 'last_any';
+
+  if (lastGpsPoint) {
+    const ageMins = (new Date(lastAnyPoint.created_at).getTime() - new Date(lastGpsPoint.created_at).getTime()) / 1000 / 60;
+    if (ageMins >= 0 && ageMins <= gpsPreferredWindowMin) {
+      chosen = lastGpsPoint;
+      decision = 'prefer_recent_gps';
+    }
   }
+
+  return { error: null, chosen, decision };
 }
 
 // --- 0. Register Token Endpoint ---
@@ -133,13 +138,10 @@ app.post('/api/telemetry', async (req, res) => {
     // Check for Movement Start
     if (speed > 5.0 && !deviceState[devId].isMoving) {
         deviceState[devId].isMoving = true;
-        // sendPushNotification(devId, 'Tractor Moving!', `Speed: ${speed} km/h`);
     }
     // Check for Stop
     else if (speed < 1.0 && deviceState[devId].isMoving) {
         deviceState[devId].isMoving = false;
-        // Optional: Send "Stopped" alert
-        // sendPushNotification(devId, 'Tractor Stopped', 'Engine is off.');
     }
 
     addLog('DATA', `Received ${points.length} pts from ${points[0].device_id}. Source: ${latest.source || 'unknown'}, Signal: ${latest.signal || 0}`);
@@ -171,22 +173,67 @@ app.get('/api/history', async (req, res) => {
 
   if (error) return res.status(500).json({ error: error.message });
 
-  // Filter: Remove GPS Drift (Stationary Jitter)
+  // Filter: Remove stationary jitter, and prevent GSM fallback from overriding GPS.
+  // Rationale: when the tractor is stationary, GPS points may be filtered out as jitter,
+  // but GSM points can "jump" by >10m and become the last point, making the map show GSM.
   const filteredData = [];
   if (data && data.length > 0) {
-      filteredData.push(data[0]); 
+      const RECENT_GPS_WINDOW_MIN = 3;
+      const GSM_MIN_MOVE_METERS = 200; // Ignore small GSM cell "wiggles"
+
+      let lastGpsSeenAtMs = null;
+      let lastGpsPoint = null;
+
+      filteredData.push(data[0]);
+      if (data[0].source === 'gps') {
+        lastGpsSeenAtMs = new Date(data[0].created_at).getTime();
+        lastGpsPoint = data[0];
+      }
 
       for (let i = 1; i < data.length; i++) {
           const prev = filteredData[filteredData.length - 1];
           const curr = data[i];
 
+          // Track last GPS fix time even if we end up filtering it out
+          if (curr.source === 'gps') {
+            lastGpsSeenAtMs = new Date(curr.created_at).getTime();
+            lastGpsPoint = curr;
+          }
+
+          // If we've seen GPS recently, ignore GSM fallback points so the "latest" stays GPS.
+          // COMMENTED OUT: To allow frontend to see full GSM history if desired
+          /*
+          if (curr.source === 'gsm' && lastGpsSeenAtMs) {
+            const ageMins = (new Date(curr.created_at).getTime() - lastGpsSeenAtMs) / 1000 / 60;
+            if (ageMins >= 0 && ageMins <= RECENT_GPS_WINDOW_MIN) {
+              continue;
+            }
+          }
+          */
+
           const distMeters = getDistanceFromLatLonInKm(prev.latitude, prev.longitude, curr.latitude, curr.longitude) * 1000;
           const timeDiff = (new Date(curr.created_at) - new Date(prev.created_at)) / 1000 / 60; // mins
 
-          // Accept if moved > 10m OR speed > 3km/h OR time gap > 5 mins
-          if (distMeters > 10 || curr.speed > 3.0 || timeDiff > 5) {
+          const isGsm = curr.source === 'gsm';
+
+          // For GSM: only accept large moves or big time gaps (cell jumps are noisy)
+          if (isGsm) {
+            if (distMeters > GSM_MIN_MOVE_METERS || timeDiff > 10) {
               filteredData.push(curr);
+            }
+            continue;
           }
+
+          // For GPS: accept if moved > 10m OR speed > 3km/h OR time gap > 5 mins
+          if (distMeters > 10 || curr.speed > 3.0 || timeDiff > 5) filteredData.push(curr);
+      }
+
+      // Ensure the most recent GPS fix is included at the end when GPS was seen recently.
+      if (lastGpsPoint) {
+        const lastFiltered = filteredData[filteredData.length - 1];
+        const lastGpsAt = new Date(lastGpsPoint.created_at).getTime();
+        const lastFilteredAt = new Date(lastFiltered.created_at).getTime();
+        if (lastGpsAt > lastFilteredAt) filteredData.push(lastGpsPoint);
       }
   }
 
@@ -200,13 +247,8 @@ app.get('/api/stats', async (req, res) => {
   if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
 
   // 1. Get Latest Status (Independent of Date)
-  const { data: lastPointData } = await supabase
-    .from('tracking_history')
-    .select('created_at, source, signal, hdop, satellites, latitude, longitude, speed')
-    .eq('device_id', device_id)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .single();
+  const { error: latestErr, chosen: lastPointData } = await getBestLatestPoint(device_id, { gpsPreferredWindowMin: 3 });
+  if (latestErr) return res.status(500).json({ error: latestErr.message });
 
   // 2. Get Today's Stats (IST)
   const { start } = getISTDateRange();
@@ -271,6 +313,31 @@ app.get('/api/stats', async (req, res) => {
     last_lon: lastPointData ? lastPointData.longitude : null,
     last_speed: lastPointData ? lastPointData.speed : 0,
     last_seen: lastPointData ? lastPointData.created_at : null
+  });
+});
+
+// --- 3b. Latest Best-Point Endpoint (For App Live Map) ---
+// GET /api/latest?device_id=...
+// Prefer a recent GPS fix over GSM fallback so the map doesn't jump to GSM.
+app.get('/api/latest', async (req, res) => {
+  const { device_id } = req.query;
+  if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
+
+  const { error: latestErr, chosen, decision } = await getBestLatestPoint(device_id, { gpsPreferredWindowMin: 3 });
+  if (latestErr) return res.status(500).json({ error: latestErr.message });
+  if (!chosen) return res.status(404).json({ error: 'No data found' });
+
+  res.json({
+    device_id,
+    latitude: chosen.latitude,
+    longitude: chosen.longitude,
+    speed: chosen.speed,
+    source: chosen.source,
+    hdop: chosen.hdop,
+    satellites: chosen.satellites,
+    signal: chosen.signal,
+    created_at: chosen.created_at,
+    decision
   });
 });
 

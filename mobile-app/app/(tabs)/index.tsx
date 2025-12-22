@@ -1,4 +1,4 @@
-import MapView, { Marker, Polyline, Callout } from '@/components/MapLib';
+import MapView, { Marker, Polyline, Callout, Circle } from '@/components/MapLib';
 import { useMapType } from '@/context/MapContext';
 import { useTheme } from '@/context/ThemeContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -59,6 +59,10 @@ export default function DashboardScreen() {
     return 'weather-night';
   };
 
+  const toggleViewMode = () => {
+    setViewMode(prev => prev === 'gps' ? 'gsm' : 'gps');
+  };
+
   const toggleMapType = () => {
     if (mapType === 'standard') setMapType('satellite');
     else if (mapType === 'satellite') setMapType('hybrid');
@@ -89,6 +93,7 @@ export default function DashboardScreen() {
   const [gsmPoints, setGsmPoints] = useState<any[]>([]);
   const [stops, setStops] = useState<any[]>([]);
   const [hasCentered, setHasCentered] = useState(false);
+  const [viewMode, setViewMode] = useState<'gps' | 'gsm'>('gps');
 
   const loadMapData = async () => {
     try {
@@ -106,6 +111,11 @@ export default function DashboardScreen() {
         
         setRouteCoordinates(gpsRoute);
         setGsmPoints(gsmRoute);
+
+        // Auto-switch to GSM if no GPS data
+        if (gpsRoute.length === 0 && gsmRoute.length > 0) {
+            setViewMode('gsm');
+        }
         
         // Calculate Stops (Gaps > 5 mins)
         let rawStops = [];
@@ -179,9 +189,16 @@ export default function DashboardScreen() {
     }
   };
 
+  const getCurrentLocation = () => {
+    if (viewMode === 'gps' && routeCoordinates.length > 0) return routeCoordinates[routeCoordinates.length - 1];
+    if (viewMode === 'gsm' && gsmPoints.length > 0) return gsmPoints[gsmPoints.length - 1];
+    return tractorLocation;
+  };
+
   const centerOnTractor = () => {
+    const loc = getCurrentLocation();
     mapRef.current?.animateToRegion({
-      ...tractorLocation,
+      ...loc,
       latitudeDelta: 0.005,
       longitudeDelta: 0.005,
     }, 1000);
@@ -197,7 +214,7 @@ export default function DashboardScreen() {
     }
 
     try {
-      const { latitude, longitude } = tractorLocation;
+      const { latitude, longitude } = getCurrentLocation();
       let addressObj = null;
 
       // 1. Try Native Geocoder (Google Play Services)
@@ -312,31 +329,23 @@ export default function DashboardScreen() {
         mapType={mapType}
       >
         {/* GPS Route - Orange */}
-        <Polyline
-          coordinates={routeCoordinates}
-          strokeColor="#FF5500"
-          strokeWidth={4}
-        />
-        
-        {/* GSM Route - Purple (Cell Tower Location) */}
-        {gsmPoints.length > 0 && (
+        {viewMode === 'gps' && (
           <Polyline
-            coordinates={gsmPoints.map(p => ({ latitude: p.latitude, longitude: p.longitude }))}
-            strokeColor="#9333EA"
-            strokeWidth={3}
-            lineDashPattern={[10, 5]}
+            coordinates={routeCoordinates}
+            strokeColor="#FF5500"
+            strokeWidth={4}
           />
         )}
         
-        {/* GSM Point Markers - Purple dots */}
-        {gsmPoints.map((point, index) => (
-          <Marker 
-            key={`gsm-${index}`}
-            coordinate={{ latitude: point.latitude, longitude: point.longitude }}
-            anchor={{ x: 0.5, y: 0.5 }}
-          >
-            <View className="bg-purple-600 w-3 h-3 rounded-full border border-white" />
-          </Marker>
+        {/* GSM Route - Purple Circles (Approximate Location) */}
+        {viewMode === 'gsm' && gsmPoints.map((point, index) => (
+          <Circle
+            key={`gsm-circle-${index}`}
+            center={{ latitude: point.latitude, longitude: point.longitude }}
+            radius={500} // 500 meters approximation
+            strokeColor="rgba(147, 51, 234, 0.5)" // Purple
+            fillColor="rgba(147, 51, 234, 0.2)"
+          />
         ))}
         
         {stops.map((stop, index) => (
@@ -357,10 +366,20 @@ export default function DashboardScreen() {
           </Marker>
         ))}
 
-        <Marker coordinate={tractorLocation}>
-          <View className="bg-primary p-2 rounded-full border-4 border-white/20 shadow-lg">
-            <MaterialCommunityIcons name="navigation" size={20} color="white" style={{ transform: [{ rotate: '45deg' }] }} />
-          </View>
+        <Marker 
+          coordinate={getCurrentLocation()}
+          anchor={{ x: 0.5, y: 0.5 }}
+        >
+          {viewMode === 'gps' ? (
+            <View className="bg-primary p-2 rounded-full border-4 border-white/20 shadow-lg">
+              <MaterialCommunityIcons name="navigation" size={20} color="white" style={{ transform: [{ rotate: '45deg' }] }} />
+            </View>
+          ) : (
+            <View className="items-center justify-center" style={{ width: 80, height: 80 }}>
+               <View className="w-full h-full bg-purple-500/30 rounded-full border border-purple-500" />
+               <View className="absolute w-4 h-4 bg-purple-700 rounded-full border-2 border-white" />
+            </View>
+          )}
         </Marker>
       </MapView>
 
@@ -368,44 +387,65 @@ export default function DashboardScreen() {
       <SafeAreaView className="absolute top-0 left-0 right-0 z-10 px-4" edges={['top']} pointerEvents="box-none">
         <View className="flex-row justify-between items-start mt-4" pointerEvents="box-none">
           
-          {/* Title */}
-          <Animated.View entering={FadeInUp.delay(300).springify()} className="bg-white/80 dark:bg-dark-card/80 p-4 rounded-2xl backdrop-blur-md shadow-sm max-w-[75%] flex-row items-center gap-3">
-            <Image source={require('@/assets/images/icon.png')} className="w-12 h-12 rounded-xl" />
-            <View>
-              <Text className="text-black dark:text-white text-xl font-bold">Papaji Tractor</Text>
-              <View className="flex-row items-center gap-1 flex-wrap">
-                <Text className="text-gray-500 dark:text-dark-subtext text-xs">Mahindra 575 DI</Text>
-                
-                {/* Status Badge */}
-                <View className={`px-1.5 py-0.5 rounded-md ${stats.status === 'Online' ? 'bg-green-100' : 'bg-red-100'}`}>
-                   <Text className={`text-[10px] font-bold ${stats.status === 'Online' ? 'text-green-700' : 'text-red-700'}`}>
-                     {stats.status}
-                   </Text>
+          {/* Left Column: Title + Legend */}
+          <View className="flex-1 mr-4">
+            {/* Title */}
+            <Animated.View entering={FadeInUp.delay(300).springify()} className="bg-white/80 dark:bg-dark-card/80 p-4 rounded-2xl backdrop-blur-md shadow-sm flex-row items-center gap-3">
+              <Image source={require('@/assets/images/icon.png')} className="w-12 h-12 rounded-xl" />
+              <View className="flex-1">
+                <Text className="text-black dark:text-white text-xl font-bold">Papaji Tractor</Text>
+                <View className="flex-row items-center gap-1 flex-wrap">
+                  <Text className="text-gray-500 dark:text-dark-subtext text-xs">Mahindra 575 DI</Text>
+                  
+                  {/* Status Badge */}
+                  <View className={`px-1.5 py-0.5 rounded-md ${stats.status === 'Online' ? 'bg-green-100' : 'bg-red-100'}`}>
+                    <Text className={`text-[10px] font-bold ${stats.status === 'Online' ? 'text-green-700' : 'text-red-700'}`}>
+                      {stats.status}
+                    </Text>
+                  </View>
+
+                  {/* Source Badge (Only if Online) */}
+                  {stats.status === 'Online' && (
+                    <View className={`px-1.5 py-0.5 rounded-md ${stats.source === 'gps' ? 'bg-blue-100' : 'bg-yellow-100'}`}>
+                        <Text className={`text-[10px] font-bold ${stats.source === 'gps' ? 'text-blue-700' : 'text-yellow-700'}`}>
+                          {stats.source === 'gps' ? 'GPS' : 'GSM'}
+                        </Text>
+                    </View>
+                  )}
+
+                  {/* Signal Strength (Always Show if available) */}
+                  {stats.signal > 0 && (
+                    <View className="flex-row items-center ml-1 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-md">
+                        <MaterialCommunityIcons 
+                          name={stats.signal > 20 ? "signal-cellular-3" : stats.signal > 10 ? "signal-cellular-2" : "signal-cellular-1"} 
+                          size={12} 
+                          color={stats.signal > 15 ? "#16a34a" : "#ca8a04"} 
+                        />
+                        <Text className="text-[10px] font-bold text-gray-600 dark:text-gray-300 ml-1">{stats.signal}</Text>
+                    </View>
+                  )}
                 </View>
+              </View>
+            </Animated.View>
 
-                {/* Source Badge (Only if Online) */}
-                {stats.status === 'Online' && (
-                   <View className={`px-1.5 py-0.5 rounded-md ${stats.source === 'gps' ? 'bg-blue-100' : 'bg-yellow-100'}`}>
-                      <Text className={`text-[10px] font-bold ${stats.source === 'gps' ? 'text-blue-700' : 'text-yellow-700'}`}>
-                        {stats.source === 'gps' ? 'GPS' : 'GSM'}
-                      </Text>
-                   </View>
+            {/* Map Legend - Moved here to stay on left */}
+            <Animated.View entering={FadeIn.delay(500)} className="self-start bg-white/90 dark:bg-dark-card/90 px-3 py-2 rounded-xl mt-2">
+              <View className="flex-row items-center gap-3">
+                {viewMode === 'gps' && (
+                  <View className="flex-row items-center gap-1">
+                    <View className="w-4 h-1 bg-[#FF5500] rounded" />
+                    <Text className="text-[10px] text-black dark:text-white">GPS Route</Text>
+                  </View>
                 )}
-
-                {/* Signal Strength (Always Show if available) */}
-                {stats.signal > 0 && (
-                   <View className="flex-row items-center ml-1 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-md">
-                      <MaterialCommunityIcons 
-                        name={stats.signal > 20 ? "signal-cellular-3" : stats.signal > 10 ? "signal-cellular-2" : "signal-cellular-1"} 
-                        size={12} 
-                        color={stats.signal > 15 ? "#16a34a" : "#ca8a04"} 
-                      />
-                      <Text className="text-[10px] font-bold text-gray-600 dark:text-gray-300 ml-1">{stats.signal}</Text>
-                   </View>
+                {viewMode === 'gsm' && (
+                  <View className="flex-row items-center gap-1">
+                    <View className="w-4 h-4 rounded-full bg-purple-600/20 border border-purple-600" />
+                    <Text className="text-[10px] text-black dark:text-white">GSM Approx</Text>
+                  </View>
                 )}
               </View>
-            </View>
-          </Animated.View>
+            </Animated.View>
+          </View>
 
           {/* Floating Action Buttons */}
           <Animated.View entering={FadeInUp.delay(400).springify()} className="gap-3">
@@ -442,29 +482,22 @@ export default function DashboardScreen() {
             </TouchableOpacity>
           </Animated.View>
           
-          {/* Map Legend */}
-          {gsmPoints.length > 0 && (
-            <Animated.View entering={FadeIn.delay(500)} className="bg-white/90 dark:bg-dark-card/90 px-3 py-2 rounded-xl mt-2">
-              <View className="flex-row items-center gap-3">
-                <View className="flex-row items-center gap-1">
-                  <View className="w-4 h-1 bg-[#FF5500] rounded" />
-                  <Text className="text-[10px] text-black dark:text-white">GPS</Text>
-                </View>
-                <View className="flex-row items-center gap-1">
-                  <View className="w-4 h-1 bg-purple-600 rounded" style={{ borderStyle: 'dashed' }} />
-                  <Text className="text-[10px] text-black dark:text-white">GSM</Text>
-                </View>
-              </View>
-            </Animated.View>
-          )}
         </View>
       </SafeAreaView>
 
       {/* Bottom Stats Cards */}
       <View className="absolute bottom-32 left-0 right-0 px-4" pointerEvents="box-none">
         
-        {/* Locate Button */}
-        <Animated.View entering={FadeInDown.delay(600).springify()} className="items-end mb-4">
+        {/* Controls Row: View Toggle (Left) & Locate (Right) */}
+        <Animated.View entering={FadeInDown.delay(600).springify()} className="flex-row justify-between items-end mb-4">
+            <TouchableOpacity 
+              onPress={toggleViewMode} 
+              className={`p-3 rounded-full shadow-lg items-center justify-center ${viewMode === 'gps' ? 'bg-white dark:bg-dark-card' : 'bg-purple-100 dark:bg-purple-900'}`}
+              style={{ width: 50, height: 50 }}
+            >
+              <MaterialCommunityIcons name={viewMode === 'gps' ? "satellite-uplink" : "access-point-network"} size={24} color={viewMode === 'gps' ? (isDark ? "black" : "white") : "#9333EA"} />
+            </TouchableOpacity>
+
             <TouchableOpacity 
               onPress={centerOnTractor} 
               className="bg-primary p-3 rounded-full shadow-lg items-center justify-center"
