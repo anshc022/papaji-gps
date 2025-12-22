@@ -99,5 +99,62 @@ export const api = {
       console.error('API Error (deleteLearning):', error);
       throw error;
     }
+  },
+
+  /**
+   * Clear all data (Admin)
+   */
+  clearAllData: async (pin: string) => {
+    try {
+      const response = await fetch(`${BASE_URL}/api/admin/clear-data`, {
+        method: 'POST', // Changed to POST to match backend
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin })
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Failed to clear data');
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('API Error (clearAllData):', error);
+      throw error;
+    }
+  },
+
+  resetDevice: async (deviceId: string, pin: string) => {
+    try {
+      const response = await fetch(`${BASE_URL}/api/admin/reset-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: deviceId, pin })
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Failed to reset device');
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('API Error (resetDevice):', error);
+      throw error;
+    }
+  },
+
+  reconnectDevice: async (deviceId: string, pin: string) => {
+    try {
+      const response = await fetch(`${BASE_URL}/api/admin/reconnect-device`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: deviceId, pin })
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Failed to reconnect device');
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('API Error (reconnectDevice):', error);
+      throw error;
+    }
   }
 };

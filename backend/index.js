@@ -8,6 +8,8 @@ const PORT = process.env.PORT || 3000;
 
 // In-memory state for alerts
 const deviceState = {}; 
+// In-memory commands queue
+const deviceCommands = {};
 
 // In-memory logs (last 100)
 const serverLogs = [];
@@ -33,41 +35,47 @@ async function getBestLatestPoint(deviceId, opts = {}) {
     ? opts.gpsPreferredWindowMin
     : 3;
 
-  const { data: lastAnyPointData, error: anyErr } = await supabase
-    .from('tracking_history')
-    .select('created_at, source, signal, hdop, satellites, latitude, longitude, speed')
+  // 1. Get Latest GPS
+  const { data: lastGpsData } = await supabase
+    .from('gps_logs')
+    .select('*')
     .eq('device_id', deviceId)
-    .neq('source', 'heartbeat')
     .order('created_at', { ascending: false })
     .limit(1);
+  const lastGps = (lastGpsData && lastGpsData.length > 0) ? lastGpsData[0] : null;
 
-  if (anyErr) return { error: anyErr, chosen: null, decision: 'error' };
-  
-  const lastAnyPoint = (lastAnyPointData && lastAnyPointData.length > 0) ? lastAnyPointData[0] : null;
-  if (!lastAnyPoint) return { error: null, chosen: null, decision: 'no_data' };
-
-  const { data: lastGpsPointData } = await supabase
-    .from('tracking_history')
-    .select('created_at, source, signal, hdop, satellites, latitude, longitude, speed')
+  // 2. Get Latest GSM
+  const { data: lastGsmData } = await supabase
+    .from('gsm_logs')
+    .select('*')
     .eq('device_id', deviceId)
-    .eq('source', 'gps')
     .order('created_at', { ascending: false })
     .limit(1);
-    
-  const lastGpsPoint = (lastGpsPointData && lastGpsPointData.length > 0) ? lastGpsPointData[0] : null;
+  const lastGsm = (lastGsmData && lastGsmData.length > 0) ? lastGsmData[0] : null;
 
-  let chosen = lastAnyPoint;
-  let decision = 'last_any';
+  if (!lastGps && !lastGsm) return { error: null, chosen: null, decision: 'no_data' };
 
-  if (lastGpsPoint) {
-    const ageMins = (new Date(lastAnyPoint.created_at).getTime() - new Date(lastGpsPoint.created_at).getTime()) / 1000 / 60;
-    if (ageMins >= 0 && ageMins <= gpsPreferredWindowMin) {
-      chosen = lastGpsPoint;
-      decision = 'prefer_recent_gps';
-    }
+  // Normalize objects for the app
+  if (lastGps) lastGps.source = 'gps';
+  if (lastGsm) lastGsm.source = 'gsm';
+
+  // Decision Logic
+  if (!lastGps) return { error: null, chosen: lastGsm, decision: 'only_gsm' };
+  if (!lastGsm) return { error: null, chosen: lastGps, decision: 'only_gps' };
+
+  const gpsTime = new Date(lastGps.created_at).getTime();
+  const gsmTime = new Date(lastGsm.created_at).getTime();
+  const ageDiffMins = (gsmTime - gpsTime) / 1000 / 60;
+
+  // If GSM is newer, but GPS is recent (within window), prefer GPS
+  if (ageDiffMins > 0 && ageDiffMins <= gpsPreferredWindowMin) {
+      return { error: null, chosen: lastGps, decision: 'prefer_recent_gps' };
   }
 
-  return { error: null, chosen, decision };
+  // Otherwise return the strictly newer one
+  return gpsTime >= gsmTime 
+      ? { error: null, chosen: lastGps, decision: 'latest_is_gps' }
+      : { error: null, chosen: lastGsm, decision: 'latest_is_gsm' };
 }
 
 // --- 0. Register Token Endpoint ---
@@ -92,39 +100,58 @@ app.post('/api/telemetry', async (req, res) => {
 
     if (points.length === 0) return res.status(400).send('ERR: No Data');
 
-    // Map to Supabase Schema
-    const dbRows = points.map(p => {
-      const createdAt = new Date().toISOString();
+    const gpsRows = [];
+    const gsmRows = [];
 
+    points.forEach(p => {
+      const createdAt = new Date().toISOString();
+      
       // Fix: Swap Lat/Lon if swapped (India region check)
       let finalLat = p.latitude;
       let finalLon = p.longitude;
-
       if (Math.abs(finalLat) > 60 && Math.abs(finalLon) < 60) {
          const temp = finalLat;
          finalLat = finalLon;
          finalLon = temp;
       }
 
-      return {
-        device_id: p.device_id,
-        latitude: finalLat,
-        longitude: finalLon,
-        speed: p.speed_kmh,
-        battery: p.battery_voltage || 4.0,
-        source: p.source || 'gps',
-        signal: p.signal || 0,
-        hdop: p.hdop || null,           // GPS accuracy (lower = better)
-        satellites: p.satellites || 0,  // Satellite count
-        created_at: createdAt
-      };
+      const source = p.source || 'gps';
+
+      if (source === 'gps') {
+        gpsRows.push({
+            device_id: p.device_id,
+            latitude: finalLat,
+            longitude: finalLon,
+            speed: p.speed_kmh,
+            battery: p.battery_voltage || 4.0,
+            signal: p.signal || 0,
+            hdop: p.hdop || null,
+            satellites: p.satellites || 0,
+            created_at: createdAt
+        });
+      } else {
+        gsmRows.push({
+            device_id: p.device_id,
+            latitude: finalLat,
+            longitude: finalLon,
+            accuracy: p.hdop || 500, // Use hdop field as accuracy for GSM if passed
+            battery: p.battery_voltage || 4.0,
+            signal: p.signal || 0,
+            created_at: createdAt
+        });
+      }
     });
 
-    // Bulk Insert into Supabase
-    const { error } = await supabase.from('tracking_history').insert(dbRows);
+    // Bulk Insert
+    const promises = [];
+    if (gpsRows.length > 0) promises.push(supabase.from('gps_logs').insert(gpsRows));
+    if (gsmRows.length > 0) promises.push(supabase.from('gsm_logs').insert(gsmRows));
 
-    if (error) {
-      console.error('Supabase Error:', error);
+    const results = await Promise.all(promises);
+    const errors = results.filter(r => r.error).map(r => r.error);
+
+    if (errors.length > 0) {
+      console.error('Supabase Error:', errors);
       return res.status(500).send('ERR: DB');
     }
 
@@ -144,9 +171,17 @@ app.post('/api/telemetry', async (req, res) => {
         deviceState[devId].isMoving = false;
     }
 
-    addLog('DATA', `Received ${points.length} pts from ${points[0].device_id}. Source: ${latest.source || 'unknown'}, Signal: ${latest.signal || 0}`);
+    addLog('DATA', `Received ${points.length} pts from ${points[0].device_id}. GPS: ${gpsRows.length}, GSM: ${gsmRows.length}`);
     
-    res.json({ status: 'ok' });
+    // Check for pending commands
+    const responseObj = { status: 'ok' };
+    if (deviceCommands[devId]) {
+        responseObj.command = deviceCommands[devId];
+        console.log(`[CMD] Sending '${deviceCommands[devId]}' to ${devId}`);
+        delete deviceCommands[devId]; // Clear after sending
+    }
+
+    res.json(responseObj);
 
   } catch (err) {
     console.error('Server Error:', err);
@@ -162,82 +197,38 @@ app.get('/api/history', async (req, res) => {
 
   const { start, end } = getISTDateRange(date);
 
-  const { data, error } = await supabase
-    .from('tracking_history')
-    .select('latitude, longitude, speed, created_at, source, hdop, satellites')
+  // Query GPS Logs
+  const { data: gpsData, error: gpsError } = await supabase
+    .from('gps_logs')
+    .select('latitude, longitude, speed, created_at, hdop, satellites')
     .eq('device_id', device_id)
     .gte('created_at', start)
     .lte('created_at', end)
-    .neq('source', 'heartbeat')
     .order('created_at', { ascending: true });
 
-  if (error) return res.status(500).json({ error: error.message });
+  if (gpsError) return res.status(500).json({ error: gpsError.message });
 
-  // Filter: Remove stationary jitter, and prevent GSM fallback from overriding GPS.
-  // Rationale: when the tractor is stationary, GPS points may be filtered out as jitter,
-  // but GSM points can "jump" by >10m and become the last point, making the map show GSM.
-  const filteredData = [];
-  if (data && data.length > 0) {
-      const RECENT_GPS_WINDOW_MIN = 3;
-      const GSM_MIN_MOVE_METERS = 200; // Ignore small GSM cell "wiggles"
+  // Query GSM Logs
+  const { data: gsmData, error: gsmError } = await supabase
+    .from('gsm_logs')
+    .select('latitude, longitude, created_at, accuracy')
+    .eq('device_id', device_id)
+    .gte('created_at', start)
+    .lte('created_at', end)
+    .order('created_at', { ascending: true });
 
-      let lastGpsSeenAtMs = null;
-      let lastGpsPoint = null;
+  if (gsmError) return res.status(500).json({ error: gsmError.message });
 
-      filteredData.push(data[0]);
-      if (data[0].source === 'gps') {
-        lastGpsSeenAtMs = new Date(data[0].created_at).getTime();
-        lastGpsPoint = data[0];
-      }
+  // Combine and Tag
+  const combined = [
+      ...(gpsData || []).map(p => ({ ...p, source: 'gps' })),
+      ...(gsmData || []).map(p => ({ ...p, source: 'gsm' }))
+  ];
 
-      for (let i = 1; i < data.length; i++) {
-          const prev = filteredData[filteredData.length - 1];
-          const curr = data[i];
+  // Sort by time
+  combined.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
-          // Track last GPS fix time even if we end up filtering it out
-          if (curr.source === 'gps') {
-            lastGpsSeenAtMs = new Date(curr.created_at).getTime();
-            lastGpsPoint = curr;
-          }
-
-          // If we've seen GPS recently, ignore GSM fallback points so the "latest" stays GPS.
-          // COMMENTED OUT: To allow frontend to see full GSM history if desired
-          /*
-          if (curr.source === 'gsm' && lastGpsSeenAtMs) {
-            const ageMins = (new Date(curr.created_at).getTime() - lastGpsSeenAtMs) / 1000 / 60;
-            if (ageMins >= 0 && ageMins <= RECENT_GPS_WINDOW_MIN) {
-              continue;
-            }
-          }
-          */
-
-          const distMeters = getDistanceFromLatLonInKm(prev.latitude, prev.longitude, curr.latitude, curr.longitude) * 1000;
-          const timeDiff = (new Date(curr.created_at) - new Date(prev.created_at)) / 1000 / 60; // mins
-
-          const isGsm = curr.source === 'gsm';
-
-          // For GSM: only accept large moves or big time gaps (cell jumps are noisy)
-          if (isGsm) {
-            if (distMeters > GSM_MIN_MOVE_METERS || timeDiff > 10) {
-              filteredData.push(curr);
-            }
-            continue;
-          }
-
-          // For GPS: accept if moved > 10m OR speed > 3km/h OR time gap > 5 mins
-          if (distMeters > 10 || curr.speed > 3.0 || timeDiff > 5) filteredData.push(curr);
-      }
-
-      // Ensure the most recent GPS fix is included at the end when GPS was seen recently.
-      if (lastGpsPoint) {
-        const lastFiltered = filteredData[filteredData.length - 1];
-        const lastGpsAt = new Date(lastGpsPoint.created_at).getTime();
-        const lastFilteredAt = new Date(lastFiltered.created_at).getTime();
-        if (lastGpsAt > lastFilteredAt) filteredData.push(lastGpsPoint);
-      }
-  }
-
-  res.json(filteredData);
+  res.json(combined);
 });
 
 // --- 3. Stats Endpoint (For App) ---
@@ -250,12 +241,12 @@ app.get('/api/stats', async (req, res) => {
   const { error: latestErr, chosen: lastPointData } = await getBestLatestPoint(device_id, { gpsPreferredWindowMin: 3 });
   if (latestErr) return res.status(500).json({ error: latestErr.message });
 
-  // 2. Get Today's Stats (IST)
+  // 2. Get Today's Stats (IST) - ONLY FROM GPS LOGS for accuracy
   const { start } = getISTDateRange();
 
   const { data, error } = await supabase
-    .from('tracking_history')
-    .select('latitude, longitude, speed, created_at, source, hdop, satellites')
+    .from('gps_logs')
+    .select('latitude, longitude, speed, created_at')
     .eq('device_id', device_id)
     .gte('created_at', start)
     .order('created_at', { ascending: true });
@@ -266,7 +257,7 @@ app.get('/api/stats', async (req, res) => {
   let totalDistanceKm = 0;
   let totalDurationMinutes = 0;
   
-  const validPoints = data ? data.filter(p => p.source !== 'heartbeat') : [];
+  const validPoints = data || [];
 
   if (validPoints.length > 1) {
     for (let i = 0; i < validPoints.length - 1; i++) {
@@ -298,21 +289,12 @@ app.get('/api/stats', async (req, res) => {
 
   res.json({
     date: new Date().toISOString().split('T')[0],
-    max_speed: Math.round(maxSpeed * 10) / 10,
-    total_distance_km: Math.round(totalDistanceKm * 100) / 100,
+    max_speed: Math.round(maxSpeed),
+    total_distance_km: parseFloat(totalDistanceKm.toFixed(2)),
     total_duration_minutes: Math.round(totalDurationMinutes),
-    total_points: data ? data.length : 0,
     status: status,
-    source: lastPointData ? lastPointData.source : 'gps',
-    signal: lastPointData ? lastPointData.signal : 0,
-    // GPS Accuracy Info
-    hdop: lastPointData ? lastPointData.hdop : null,
-    satellites: lastPointData ? lastPointData.satellites : 0,
-    // Latest Position
-    last_lat: lastPointData ? lastPointData.latitude : null,
-    last_lon: lastPointData ? lastPointData.longitude : null,
-    last_speed: lastPointData ? lastPointData.speed : 0,
-    last_seen: lastPointData ? lastPointData.created_at : null
+    source: lastPointData ? lastPointData.source : 'unknown',
+    signal: lastPointData ? lastPointData.signal : 0
   });
 });
 
@@ -376,6 +358,46 @@ app.get('/api/logs', (req, res) => {
     memory: process.memoryUsage(),
     nodeVersion: process.version
   });
+});
+
+// --- 4. Admin: Clear All Data ---
+// DELETE /api/admin/clear-data
+app.delete('/api/admin/clear-data', async (req, res) => {
+  const { pin } = req.body;
+  if (pin !== '1234') return res.status(403).json({ error: 'Invalid PIN' });
+
+  try {
+    // Truncate all tables
+    await supabase.from('gps_logs').delete().neq('id', 0); // Delete all rows
+    await supabase.from('gsm_logs').delete().neq('id', 0);
+    await supabase.from('tracking_history').delete().neq('id', 0); // Legacy cleanup
+
+    addLog('ADMIN', 'All database data cleared by admin');
+    res.json({ status: 'ok', message: 'All data cleared' });
+  } catch (err) {
+    console.error('Clear Data Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin/reset-device', (req, res) => {
+    const { device_id, pin } = req.body;
+    if (pin !== '1477') return res.status(403).json({ error: 'Invalid PIN' });
+    if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
+    
+    deviceCommands[device_id] = 'reset';
+    addLog('ADMIN', `Reset command queued for ${device_id}`);
+    res.json({ success: true });
+});
+
+app.post('/api/admin/reconnect-device', (req, res) => {
+    const { device_id, pin } = req.body;
+    if (pin !== '1477') return res.status(403).json({ error: 'Invalid PIN' });
+    if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
+    
+    deviceCommands[device_id] = 'reconnect';
+    addLog('ADMIN', `Reconnect command queued for ${device_id}`);
+    res.json({ success: true });
 });
 
 // --- Helpers ---

@@ -14,7 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '@/services/api';
 import Config from '@/constants/Config';
 
-const SECRET_PIN = '1234'; // Change this to your desired PIN
+const SECRET_PIN = '1477'; // Change this to your desired PIN
 
 export default function DeveloperScreen() {
   const { activeTheme } = useTheme();
@@ -103,6 +103,81 @@ export default function DeveloperScreen() {
     } catch (e: any) {
       addLog(`Diagnose failed: ${e.message}`);
     }
+  };
+
+  const handleClearData = () => {
+    Alert.alert(
+      '⚠️ DANGER ZONE',
+      'Are you sure you want to DELETE ALL HISTORY? This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'DELETE EVERYTHING', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              addLog('Clearing database...');
+              await api.clearAllData(SECRET_PIN);
+              addLog('✅ Database Cleared Successfully');
+              Alert.alert('Success', 'All data has been wiped.');
+              loadData(); // Refresh stats
+            } catch (e: any) {
+              addLog(`❌ Clear Failed: ${e.message}`);
+              Alert.alert('Error', e.message);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleResetDevice = () => {
+    Alert.alert(
+      '⚠️ HARD RESET',
+      'This will force the device to restart immediately. Are you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'RESET DEVICE', 
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              addLog('Sending reset command...');
+              await api.resetDevice('papaji_tractor_01', SECRET_PIN);
+              addLog('✅ Reset Command Sent');
+              Alert.alert('Success', 'Reset command queued. Device will restart on next sync.');
+            } catch (e: any) {
+              addLog(`❌ Reset Failed: ${e.message}`);
+              Alert.alert('Error', e.message);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleReconnectDevice = () => {
+    Alert.alert(
+      'Soft Reset',
+      'This will force the device to reconnect to the network. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Reconnect', 
+          onPress: async () => {
+            try {
+              addLog('Sending reconnect command...');
+              await api.reconnectDevice('papaji_tractor_01', SECRET_PIN);
+              addLog('✅ Reconnect Command Sent');
+              Alert.alert('Success', 'Reconnect command queued.');
+            } catch (e: any) {
+              addLog(`❌ Reconnect Failed: ${e.message}`);
+              Alert.alert('Error', e.message);
+            }
+          }
+        }
+      ]
+    );
   };
 
   const clearLogs = () => {
@@ -254,15 +329,21 @@ export default function DeveloperScreen() {
         )}
 
         {/* Actions */}
-        <View className="flex-row gap-3 mb-4">
-          <TouchableOpacity onPress={loadData} className="flex-1 bg-blue-500 py-3 rounded-xl items-center">
+        <View className="flex-row gap-3 mb-4 flex-wrap">
+          <TouchableOpacity onPress={loadData} className="flex-1 min-w-[45%] bg-blue-500 py-3 rounded-xl items-center">
             <Text className="text-white font-bold">Refresh</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={testPush} className="flex-1 bg-purple-500 py-3 rounded-xl items-center">
+          <TouchableOpacity onPress={testPush} className="flex-1 min-w-[45%] bg-purple-500 py-3 rounded-xl items-center">
             <Text className="text-white font-bold">Diagnose</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={clearLogs} className="flex-1 bg-gray-500 py-3 rounded-xl items-center">
-            <Text className="text-white font-bold">Clear Logs</Text>
+          <TouchableOpacity onPress={handleClearData} className="flex-1 min-w-[45%] bg-red-600 py-3 rounded-xl items-center">
+            <Text className="text-white font-bold">Wipe Data</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleResetDevice} className="flex-1 min-w-[45%] bg-orange-500 py-3 rounded-xl items-center">
+            <Text className="text-white font-bold">Hard Reset</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleReconnectDevice} className="flex-1 min-w-[45%] bg-yellow-500 py-3 rounded-xl items-center">
+            <Text className="text-white font-bold">Soft Reset</Text>
           </TouchableOpacity>
         </View>
 

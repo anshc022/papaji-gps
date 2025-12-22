@@ -28,7 +28,9 @@ const int WDT_TIMEOUT = 120;
 
 // --- Network Config ---
 unsigned long lastReconnectAttempt = 0;
-const unsigned long RECONNECT_INTERVAL = 30000; // Try reconnecting every 30s
+const unsigned long RECONNECT_INTERVAL = 10000; // Reduced to 10s for faster reconnect
+unsigned long lastConnectionSuccess = 0;        // Track last successful connection
+const unsigned long HARD_RESET_INTERVAL = 300000; // 5 Minutes
 
 // --- PINS ---
 #define GSM_RX 16 
@@ -48,10 +50,6 @@ unsigned long lastSend = 0;
 unsigned long currentInterval = 5000;
 unsigned long lastSMSCheck = 0;
 const unsigned long SMS_CHECK_INTERVAL = 10000; // Check SMS every 10 seconds 
-
-// Network Reconnection
-unsigned long lastReconnectAttempt = 0;
-const unsigned long RECONNECT_DELAY = 15000; // Try to reconnect every 15s if failed
 
 // Alerts
 void sendAlertSMS(String message);
@@ -83,9 +81,9 @@ void sendLocationSMS();
 const char* OWNER_PHONE = "+919939630600";
 
 // GPS Quality / Freshness
-const unsigned long GPS_MAX_AGE_MS = 10000;   // consider GPS stale after 10s without new data
-const int GPS_MIN_SATS = 4;                  // minimum satellites for "trusted" fix
-const float GPS_MAX_HDOP = 8.0;              // higher = less accurate
+const unsigned long GPS_MAX_AGE_MS = 30000;   // Increased to 30s to handle network blocking
+const int GPS_MIN_SATS = 3;                  // Reduced to 3 for better availability
+const float GPS_MAX_HDOP = 10.0;             // Relaxed accuracy requirement
 
 bool hasFreshGpsFix();
 
@@ -107,6 +105,7 @@ void setup() {
   #endif
   esp_task_wdt_add(NULL);
 
+  gpsSerial.setRxBufferSize(1024); // Increase buffer to prevent data loss during network ops
   gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
   gsmSerial.begin(9600, SERIAL_8N1, GSM_RX, GSM_TX);
 
@@ -137,6 +136,7 @@ void connectToNetwork() {
     Serial.println("fail");
   } else {
     Serial.println("success");
+    lastConnectionSuccess = millis(); // Initialize timer
   }
 }
 
@@ -280,24 +280,55 @@ bool sendRawJson(String jsonString) {
   // Verify HTTP status (treat non-2xx as send failure so offline retry works)
   bool ok = false;
   unsigned long timeout = millis();
-  while (client.connected() && millis() - timeout < 7000) {
-    if (client.available()) {
-      String statusLine = client.readStringUntil('\n');
-      statusLine.trim();
-      if (statusLine.indexOf("200") != -1 || statusLine.indexOf("201") != -1) ok = true;
-      break;
+  
+  // Skip headers
+  while(client.connected() && millis() - timeout < 7000) {
+    if(client.available()) {
+      String line = client.readStringUntil('\n');
+      if(line == "\r") break; // End of headers
     }
   }
+  
+  // Read body
+  if(client.connected()) {
+    String line = client.readStringUntil('\n');
+    if (line.indexOf("ok") != -1) ok = true;
+    if (line.indexOf("reset") != -1) {
+       Serial.println("Server requested RESET!");
+       delay(1000);
+       ESP.restart();
+    }
+    if (line.indexOf("reconnect") != -1) {
+       Serial.println("Server requested RECONNECT!");
+       modem.gprsDisconnect();
+       // maintainNetwork() will handle reconnection
+    }
+  }
+  
   client.stop();
   return ok;
 }
 
 bool hasFreshGpsFix() {
-  if (!gps.location.isValid()) return false;
-  if (gps.location.age() > GPS_MAX_AGE_MS) return false;
+  if (!gps.location.isValid()) {
+    // Serial.println("GPS Debug: Location Invalid"); // Uncomment for verbose debug
+    return false;
+  }
+  
+  if (gps.location.age() > GPS_MAX_AGE_MS) {
+    Serial.printf("GPS Debug: Stale data (Age: %lu ms)\n", gps.location.age());
+    return false;
+  }
 
-  if (gps.satellites.isValid() && gps.satellites.value() < GPS_MIN_SATS) return false;
-  if (gps.hdop.isValid() && gps.hdop.hdop() > GPS_MAX_HDOP) return false;
+  if (gps.satellites.isValid() && gps.satellites.value() < GPS_MIN_SATS) {
+    Serial.printf("GPS Debug: Low Sats (%d)\n", gps.satellites.value());
+    return false;
+  }
+
+  if (gps.hdop.isValid() && gps.hdop.hdop() > GPS_MAX_HDOP) {
+    Serial.printf("GPS Debug: Poor HDOP (%.1f)\n", gps.hdop.hdop());
+    return false;
+  }
 
   return true;
 }
@@ -443,15 +474,25 @@ void sendLocationSMS() {
 // ============ NEW FEATURES ============
 
 void maintainNetwork() {
-  if (modem.isGprsConnected()) return;
+  if (modem.isGprsConnected()) {
+    lastConnectionSuccess = millis();
+    return;
+  }
+
+  // Hard Reset if offline for too long (5 mins)
+  if (millis() - lastConnectionSuccess > HARD_RESET_INTERVAL) {
+    Serial.println("Offline for 5+ mins. Force Restarting System...");
+    delay(1000);
+    ESP.restart();
+  }
 
   if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL) {
     lastReconnectAttempt = millis();
     Serial.println("Network disconnected. Attempting background reconnect...");
     
-    // Short check for network registration (1s timeout instead of 60s)
+    // Increased timeout to 3s for better network scanning
     if (!modem.isNetworkConnected()) {
-       modem.waitForNetwork(1000L);
+       modem.waitForNetwork(3000L);
     }
     
     if (modem.isNetworkConnected()) {

@@ -15,6 +15,7 @@ export default function DashboardScreen() {
   const { mapType, setMapType } = useMapType();
   const isDark = activeTheme === 'dark';
   const mapRef = useRef<MapView>(null);
+  const hasAutoSwitchedRef = useRef(false);
   
   const [stats, setStats] = useState({
     max_speed: 0,
@@ -95,6 +96,15 @@ export default function DashboardScreen() {
   const [hasCentered, setHasCentered] = useState(false);
   const [viewMode, setViewMode] = useState<'gps' | 'gsm'>('gps');
 
+  // Auto-switch view mode based on source
+  useEffect(() => {
+    if (stats.source === 'gps' && viewMode !== 'gps') {
+      setViewMode('gps');
+    } else if (stats.source === 'gsm' && viewMode !== 'gsm') {
+      setViewMode('gsm');
+    }
+  }, [stats.source]);
+
   const loadMapData = async () => {
     try {
       const history = await api.getHistory('papaji_tractor_01');
@@ -112,9 +122,10 @@ export default function DashboardScreen() {
         setRouteCoordinates(gpsRoute);
         setGsmPoints(gsmRoute);
 
-        // Auto-switch to GSM if no GPS data
-        if (gpsRoute.length === 0 && gsmRoute.length > 0) {
+        // Auto-switch to GSM if no GPS data (Only once)
+        if (!hasAutoSwitchedRef.current && gpsRoute.length === 0 && gsmRoute.length > 0) {
             setViewMode('gsm');
+            hasAutoSwitchedRef.current = true;
         }
         
         // Calculate Stops (Gaps > 5 mins)
@@ -338,15 +349,23 @@ export default function DashboardScreen() {
         )}
         
         {/* GSM Route - Purple Circles (Approximate Location) */}
-        {viewMode === 'gsm' && gsmPoints.map((point, index) => (
-          <Circle
-            key={`gsm-circle-${index}`}
-            center={{ latitude: point.latitude, longitude: point.longitude }}
-            radius={500} // 500 meters approximation
-            strokeColor="rgba(147, 51, 234, 0.5)" // Purple
-            fillColor="rgba(147, 51, 234, 0.2)"
-          />
-        ))}
+        {gsmPoints.map((point, index) => {
+           // Workaround: On Android, Circles sometimes don't unmount properly.
+           // We render them with 0 radius/transparent when hidden instead of unmounting.
+           const isVisible = viewMode === 'gsm';
+           if (!isVisible && Platform.OS !== 'android') return null; // Optimization for iOS
+
+           return (
+            <Circle
+              key={`gsm-circle-${index}`}
+              center={{ latitude: point.latitude, longitude: point.longitude }}
+              radius={isVisible ? 50 : 0} 
+              strokeColor={isVisible ? "rgba(147, 51, 234, 0.8)" : "transparent"}
+              fillColor={isVisible ? "rgba(147, 51, 234, 0.4)" : "transparent"}
+              zIndex={isVisible ? 1 : -1}
+            />
+           );
+        })}
         
         {stops.map((stop, index) => (
           <Marker 
@@ -375,9 +394,9 @@ export default function DashboardScreen() {
               <MaterialCommunityIcons name="navigation" size={20} color="white" style={{ transform: [{ rotate: '45deg' }] }} />
             </View>
           ) : (
-            <View className="items-center justify-center" style={{ width: 80, height: 80 }}>
+            <View className="items-center justify-center" style={{ width: 40, height: 40 }}>
                <View className="w-full h-full bg-purple-500/30 rounded-full border border-purple-500" />
-               <View className="absolute w-4 h-4 bg-purple-700 rounded-full border-2 border-white" />
+               <View className="absolute w-3 h-3 bg-purple-700 rounded-full border-2 border-white" />
             </View>
           )}
         </Marker>
