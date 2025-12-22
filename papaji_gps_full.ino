@@ -41,7 +41,9 @@ TinyGsm modem(gsmSerial);
 TinyGsmClient client(modem);
 
 unsigned long lastSend = 0;
-unsigned long currentInterval = 5000; 
+unsigned long currentInterval = 5000;
+unsigned long lastSMSCheck = 0;
+const unsigned long SMS_CHECK_INTERVAL = 10000; // Check SMS every 10 seconds 
 
 // Drift Filter & Cornering
 double lastHeading = 0;
@@ -61,6 +63,11 @@ void flushBatch();
 bool sendRawJson(String jsonString);
 void saveOffline(String data);
 void processOfflineData();
+void checkSMS();
+void sendLocationSMS();
+
+// SMS Config
+const char* OWNER_PHONE = "+919939630600";
 
 void setup() {
   Serial.begin(115200);
@@ -118,6 +125,12 @@ void loop() {
 
   while (gpsSerial.available() > 0) {
     gps.encode(gpsSerial.read());
+  }
+
+  // Check for incoming SMS
+  if (millis() - lastSMSCheck > SMS_CHECK_INTERVAL) {
+    checkSMS();
+    lastSMSCheck = millis();
   }
 
   // Smart Interval
@@ -291,5 +304,73 @@ void flushBatch() {
   } else {
     saveOffline(jsonString);
     batchArray.clear();
+  }
+}
+
+// ============ SMS FUNCTIONS ============
+
+void checkSMS() {
+  // Check for new SMS
+  String response = "";
+  modem.sendAT("+CMGF=1"); // Text mode
+  modem.waitResponse();
+  
+  modem.sendAT("+CMGL=\"ALL\""); // List all messages
+  if (modem.waitResponse(10000L, response) == 1) {
+    response.toLowerCase();
+    
+    // Check if any message contains "loc"
+    if (response.indexOf("loc") != -1) {
+      Serial.println("SMS 'loc' command received!");
+      sendLocationSMS();
+      
+      // Delete all SMS to free memory
+      modem.sendAT("+CMGDA=\"DEL ALL\"");
+      modem.waitResponse();
+    }
+  }
+}
+
+void sendLocationSMS() {
+  String message;
+  
+  if (gps.location.isValid()) {
+    float lat = gps.location.lat();
+    float lon = gps.location.lng();
+    float spd = gps.speed.kmph();
+    int sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
+    float hdopVal = gps.hdop.isValid() ? gps.hdop.hdop() : 99.0;
+    
+    // Create Google Maps link
+    message = "Papaji Tractor GPS Location:\n";
+    message += "https://maps.google.com/?q=" + String(lat, 6) + "," + String(lon, 6) + "\n";
+    message += "Speed: " + String(spd, 1) + " km/h\n";
+    message += "Satellites: " + String(sats) + "\n";
+    message += "Accuracy: ";
+    if (hdopVal < 1) message += "Excellent";
+    else if (hdopVal < 2) message += "Very Good";
+    else if (hdopVal < 5) message += "Good";
+    else message += "Poor";
+    
+    Serial.println("Sending GPS location via SMS...");
+  } else {
+    message = "Papaji Tractor:\nGPS signal not available. Please try again later.";
+    Serial.println("GPS not available, sending error SMS...");
+  }
+  
+  // Send SMS
+  modem.sendAT("+CMGF=1"); // Text mode
+  modem.waitResponse();
+  
+  modem.sendAT("+CMGS=\"" + String(OWNER_PHONE) + "\"");
+  if (modem.waitResponse(5000L, ">") == 1) {
+    modem.stream.print(message);
+    modem.stream.write(0x1A); // Ctrl+Z to send
+    
+    if (modem.waitResponse(10000L) == 1) {
+      Serial.println("SMS sent successfully!");
+    } else {
+      Serial.println("SMS send failed!");
+    }
   }
 }
