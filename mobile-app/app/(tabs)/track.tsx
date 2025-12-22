@@ -1,7 +1,7 @@
 import MapView, { Marker, Polyline } from '@/components/MapLib';
 import { useMapType } from '@/context/MapContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { ScrollView, Text, TouchableOpacity, View, useColorScheme, Alert, ActivityIndicator } from 'react-native';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -15,6 +15,11 @@ export default function TrackScreen() {
   const [selectedDate, setSelectedDate] = useState('Today');
   const [isDiagnosing, setIsDiagnosing] = useState(false);
   
+  // Playback State
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackIndex, setPlaybackIndex] = useState(0);
+  const mapRef = useRef<MapView>(null);
+  
   // Dynamic Data State
   const [trackData, setTrackData] = useState<any>({
     route: [],
@@ -24,9 +29,50 @@ export default function TrackScreen() {
     location: { latitude: 30.7333, longitude: 76.7794 }
   });
 
+  // Playback Logic
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    
+    if (isPlaying && trackData.route.length > 0) {
+      interval = setInterval(() => {
+        setPlaybackIndex((prev) => {
+          if (prev >= trackData.route.length - 1) {
+            setIsPlaying(false); // Stop at end
+            return prev;
+          }
+          return prev + 1;
+        });
+      }, 200); // Fast playback (200ms per point)
+    }
+
+    return () => clearInterval(interval);
+  }, [isPlaying, trackData.route]);
+
+  // Auto-center map during playback
+  useEffect(() => {
+    if (isPlaying && trackData.route[playbackIndex]) {
+       const point = trackData.route[playbackIndex];
+       mapRef.current?.animateToRegion({
+         latitude: point.latitude,
+         longitude: point.longitude,
+         latitudeDelta: 0.002,
+         longitudeDelta: 0.002
+       }, 200);
+    }
+  }, [playbackIndex, isPlaying]);
+
   useEffect(() => {
     loadTrackData();
-  }, [selectedDate]);
+
+    let interval: NodeJS.Timeout;
+    if (selectedDate === 'Today' && !isPlaying) {
+      interval = setInterval(loadTrackData, 5000);
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [selectedDate, isPlaying]);
 
   const loadTrackData = async () => {
     try {
@@ -47,21 +93,46 @@ export default function TrackScreen() {
 
         setTrackData({
           route: route,
-          time: 'Active', // You could calculate duration from timestamps
+          time: 'Active', 
           distance: `${stats.total_distance_km} km`,
           speed: `${stats.max_speed} km/h (Max)`,
           location: lastPoint
         });
         
-        // Update map region to center on tractor
-        setRegion(prev => ({
-          ...prev,
-          latitude: lastPoint.latitude,
-          longitude: lastPoint.longitude
-        }));
+        // If not playing, update the playback index to the end so the marker is at the latest position
+        if (!isPlaying) {
+            setPlaybackIndex(route.length - 1);
+        }
+        
+        // Update map region to center on tractor (only on first load or if following live)
+        if (!isPlaying && playbackIndex === 0) {
+            mapRef.current?.animateToRegion({
+              latitude: lastPoint.latitude,
+              longitude: lastPoint.longitude,
+              latitudeDelta: 0.005,
+              longitudeDelta: 0.005
+            }, 1000);
+        }
       }
     } catch (e) {
       console.log('Error loading track data');
+    }
+  };
+
+  const togglePlayback = () => {
+    if (trackData.route.length === 0) {
+      Alert.alert("No Data", "No route data available to play.");
+      return;
+    }
+
+    if (isPlaying) {
+      setIsPlaying(false);
+    } else {
+      // If at end, restart
+      if (playbackIndex >= trackData.route.length - 1) {
+        setPlaybackIndex(0);
+      }
+      setIsPlaying(true);
     }
   };
 
@@ -190,6 +261,7 @@ export default function TrackScreen() {
       </SafeAreaView>
 
       <MapView
+        ref={mapRef}
         style={{ flex: 1 }}
         region={region}
         mapType={mapType}
@@ -201,7 +273,8 @@ export default function TrackScreen() {
           strokeWidth={4}
         />
         
-        <Marker coordinate={trackData.location}>
+        {/* Dynamic Marker based on Playback Index */}
+        <Marker coordinate={trackData.route[playbackIndex] || trackData.location}>
           <View className="bg-primary p-2 rounded-full border-4 border-white/20 shadow-lg">
             <MaterialCommunityIcons name="navigation" size={20} color="white" style={{ transform: [{ rotate: '45deg' }] }} />
           </View>
@@ -278,8 +351,15 @@ export default function TrackScreen() {
             )}
           </TouchableOpacity>
           
-          <TouchableOpacity className="bg-gray-100 dark:bg-white w-16 h-16 rounded-2xl items-center justify-center shadow-sm">
-            <MaterialCommunityIcons name="pause" size={32} color="#FF5500" />
+          <TouchableOpacity 
+            onPress={togglePlayback}
+            className="bg-gray-100 dark:bg-white w-16 h-16 rounded-2xl items-center justify-center shadow-sm"
+          >
+            <MaterialCommunityIcons 
+              name={isPlaying ? "pause" : "play"} 
+              size={32} 
+              color="#FF5500" 
+            />
           </TouchableOpacity>
 
           <TouchableOpacity className="w-12 h-12 items-center justify-center rounded-full bg-gray-100 dark:bg-gray-800">

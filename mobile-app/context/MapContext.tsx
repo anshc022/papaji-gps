@@ -23,7 +23,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const loadMapType = async () => {
     try {
-      const savedType = await AsyncStorage.getItem('mapType');
+      const savedType = await AsyncStorage.getItem('mapType_v2'); // Changed key to force reset to default
       if (savedType) {
         setMapTypeState(savedType as MapType);
       }
@@ -35,7 +35,7 @@ export const MapProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setMapType = async (type: MapType) => {
     try {
       setMapTypeState(type);
-      await AsyncStorage.setItem('mapType', type);
+      await AsyncStorage.setItem('mapType_v2', type);
     } catch (error) {
       console.error('Failed to save map type:', error);
     }

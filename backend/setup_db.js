@@ -5,7 +5,7 @@ const client = new Client({
   user: 'postgres',
   host: 'db.ugsaejlogfychombnhgf.supabase.co',
   database: 'postgres',
-  password: 'Papaji@GPS',
+  password: 'Papaji@gps1',
   port: 5432,
   ssl: { rejectUnauthorized: false } // Required for Supabase connections
 });
@@ -57,6 +57,20 @@ async function setupDatabase() {
       -- Allow reading data (for your App)
       DROP POLICY IF EXISTS "Enable read for everyone" ON tracking_history;
       CREATE POLICY "Enable read for everyone" ON tracking_history FOR SELECT USING (true);
+    `);
+
+    // 5. Create device_tokens table for Push Notifications
+    console.log('Creating table device_tokens...');
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS device_tokens (
+        device_id text primary key,
+        token text not null,
+        updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+      );
+      
+      ALTER TABLE device_tokens ENABLE ROW LEVEL SECURITY;
+      DROP POLICY IF EXISTS "Enable all for device_tokens" ON device_tokens;
+      CREATE POLICY "Enable all for device_tokens" ON device_tokens FOR ALL USING (true);
     `);
 
     console.log('✅ SUCCESS: Database setup complete!');

@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useColorScheme as useNativeWindColorScheme } from 'nativewind';
+import { useColorScheme as useRNColorScheme } from 'react-native';
 import React, { createContext, useContext, useEffect, useState } from 'react';
 
 type ThemePreference = 'light' | 'dark' | 'system';
@@ -13,7 +14,8 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const { colorScheme, setColorScheme } = useNativeWindColorScheme();
+  const { setColorScheme } = useNativeWindColorScheme();
+  const systemColorScheme = useRNColorScheme();
   const [themePreference, setThemePreferenceState] = useState<ThemePreference>('system');
 
   // Load saved preference on mount
@@ -22,8 +24,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       try {
         const savedTheme = await AsyncStorage.getItem('themePreference');
         if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
-          setThemePreferenceState(savedTheme);
-          setColorScheme(savedTheme);
+          setThemePreferenceState(savedTheme as ThemePreference);
+          setColorScheme(savedTheme as ThemePreference);
+        } else {
+          setColorScheme('system');
         }
       } catch (error) {
         console.error('Failed to load theme preference', error);
@@ -42,9 +46,13 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Determine active theme for UI logic that needs to know 'light' vs 'dark' explicitly
-  // NativeWind handles the CSS classes automatically based on setColorScheme
-  const activeTheme = colorScheme ?? 'light';
+  // Determine active theme
+  let activeTheme: 'light' | 'dark' = 'light';
+  if (themePreference === 'system') {
+    activeTheme = systemColorScheme === 'dark' ? 'dark' : 'light';
+  } else {
+    activeTheme = themePreference;
+  }
 
   return (
     <ThemeContext.Provider value={{ themePreference, setThemePreference, activeTheme }}>
