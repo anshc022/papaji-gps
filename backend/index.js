@@ -202,7 +202,7 @@ app.get('/api/stats', async (req, res) => {
   // 1. Get Latest Status (Independent of Date)
   const { data: lastPointData } = await supabase
     .from('tracking_history')
-    .select('created_at, source, signal')
+    .select('created_at, source, signal, hdop, satellites, latitude, longitude, speed')
     .eq('device_id', device_id)
     .order('created_at', { ascending: false })
     .limit(1)
@@ -262,7 +262,15 @@ app.get('/api/stats', async (req, res) => {
     total_points: data ? data.length : 0,
     status: status,
     source: lastPointData ? lastPointData.source : 'gps',
-    signal: lastPointData ? lastPointData.signal : 0
+    signal: lastPointData ? lastPointData.signal : 0,
+    // GPS Accuracy Info
+    hdop: lastPointData ? lastPointData.hdop : null,
+    satellites: lastPointData ? lastPointData.satellites : 0,
+    // Latest Position
+    last_lat: lastPointData ? lastPointData.latitude : null,
+    last_lon: lastPointData ? lastPointData.longitude : null,
+    last_speed: lastPointData ? lastPointData.speed : 0,
+    last_seen: lastPointData ? lastPointData.created_at : null
   });
 });
 

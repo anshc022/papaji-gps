@@ -178,10 +178,77 @@ export default function DeveloperScreen() {
             <View className="flex-row flex-wrap">
               <StatBox label="Total Points" value={dbStats.total_points} />
               <StatBox label="Status" value={dbStats.status} />
-              <StatBox label="Source" value={dbStats.source} />
-              <StatBox label="Signal" value={dbStats.signal} />
               <StatBox label="Max Speed" value={`${dbStats.max_speed} km/h`} />
               <StatBox label="Distance" value={`${dbStats.total_distance_km} km`} />
+            </View>
+          </View>
+        )}
+
+        {/* ESP32 Live Telemetry */}
+        {dbStats && (
+          <View className="bg-gradient-to-r from-gray-800 to-gray-900 dark:from-gray-900 dark:to-black rounded-2xl p-4 mb-4 border border-green-500/30">
+            <View className="flex-row items-center mb-3">
+              <Text className="text-green-400 text-lg font-bold">📡 ESP32 Live Telemetry</Text>
+              <View className={`ml-auto w-2 h-2 rounded-full ${dbStats.status === 'Online' ? 'bg-green-500' : 'bg-red-500'}`} />
+            </View>
+            
+            {/* GPS Section */}
+            <View className="bg-black/30 rounded-xl p-3 mb-3">
+              <Text className="text-gray-400 text-xs mb-2">🛰️ GPS DATA</Text>
+              <View className="flex-row flex-wrap">
+                <TelemetryItem 
+                  label="Source" 
+                  value={dbStats.source?.toUpperCase() || 'N/A'} 
+                  color={dbStats.source === 'gps' ? 'text-green-400' : 'text-yellow-400'} 
+                />
+                <TelemetryItem 
+                  label="HDOP" 
+                  value={dbStats.hdop ? dbStats.hdop.toFixed(1) : 'N/A'} 
+                  color={getHdopColor(dbStats.hdop)}
+                  hint={getHdopHint(dbStats.hdop)}
+                />
+                <TelemetryItem 
+                  label="Satellites" 
+                  value={dbStats.satellites || 0} 
+                  color={dbStats.satellites >= 6 ? 'text-green-400' : dbStats.satellites >= 4 ? 'text-yellow-400' : 'text-red-400'} 
+                />
+                <TelemetryItem 
+                  label="Signal (GSM)" 
+                  value={`${dbStats.signal || 0} dBm`} 
+                  color={dbStats.signal > 15 ? 'text-green-400' : dbStats.signal > 10 ? 'text-yellow-400' : 'text-red-400'} 
+                />
+              </View>
+            </View>
+
+            {/* Position Section */}
+            <View className="bg-black/30 rounded-xl p-3 mb-3">
+              <Text className="text-gray-400 text-xs mb-2">📍 LATEST POSITION</Text>
+              <View className="flex-row flex-wrap">
+                <TelemetryItem label="Latitude" value={dbStats.last_lat?.toFixed(6) || 'N/A'} color="text-cyan-400" />
+                <TelemetryItem label="Longitude" value={dbStats.last_lon?.toFixed(6) || 'N/A'} color="text-cyan-400" />
+                <TelemetryItem label="Speed" value={`${dbStats.last_speed?.toFixed(1) || 0} km/h`} color="text-white" />
+                <TelemetryItem 
+                  label="Last Update" 
+                  value={dbStats.last_seen ? new Date(dbStats.last_seen).toLocaleTimeString() : 'N/A'} 
+                  color="text-gray-300" 
+                />
+              </View>
+            </View>
+
+            {/* Serial-like output */}
+            <View className="bg-black rounded-xl p-3">
+              <Text className="text-gray-500 text-xs mb-1">// ESP32 Serial Output</Text>
+              <Text className="text-green-300 font-mono text-xs">
+                {dbStats.source === 'gps' 
+                  ? `GPS: ${dbStats.last_lat?.toFixed(6) || 0}, ${dbStats.last_lon?.toFixed(6) || 0} | HDOP: ${dbStats.hdop?.toFixed(1) || 'N/A'} | Sats: ${dbStats.satellites || 0}`
+                  : dbStats.source === 'gsm'
+                  ? `GSM Fallback: ${dbStats.last_lat?.toFixed(6) || 0}, ${dbStats.last_lon?.toFixed(6) || 0} | Signal: ${dbStats.signal || 0}`
+                  : 'Waiting for data...'
+                }
+              </Text>
+              <Text className="text-gray-500 font-mono text-xs mt-1">
+                Signal Quality: {dbStats.signal || 0} | Speed: {dbStats.last_speed?.toFixed(1) || 0} km/h
+              </Text>
             </View>
           </View>
         )}
@@ -255,4 +322,30 @@ function StatBox({ label, value }: { label: string; value: any }) {
       <Text className="text-black dark:text-white font-bold">{value ?? '-'}</Text>
     </View>
   );
+}
+
+function TelemetryItem({ label, value, color, hint }: { label: string; value: any; color: string; hint?: string }) {
+  return (
+    <View className="w-1/2 mb-2">
+      <Text className="text-gray-500 text-[10px]">{label}</Text>
+      <Text className={`font-mono font-bold ${color}`}>{value}</Text>
+      {hint && <Text className="text-gray-600 text-[9px]">{hint}</Text>}
+    </View>
+  );
+}
+
+function getHdopColor(hdop: number | null): string {
+  if (!hdop || hdop >= 99) return 'text-gray-400';
+  if (hdop < 1) return 'text-green-400';
+  if (hdop < 2) return 'text-green-300';
+  if (hdop < 5) return 'text-yellow-400';
+  return 'text-red-400';
+}
+
+function getHdopHint(hdop: number | null): string {
+  if (!hdop || hdop >= 99) return 'No GPS Fix';
+  if (hdop < 1) return 'Excellent';
+  if (hdop < 2) return 'Very Good';
+  if (hdop < 5) return 'Good';
+  return 'Poor';
 }
