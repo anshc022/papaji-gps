@@ -1,15 +1,18 @@
 const supabase = require('./supabase');
 
 async function cleanAll() {
-  const { count, error } = await supabase
+  console.log("Fetching latest 5 IDs...");
+  const { data } = await supabase
     .from('tracking_history')
-    .delete({ count: 'exact' })
-    .eq('device_id', 'papaji_tractor_01');
-
-  if (error) {
-    console.error('Error:', error);
-  } else {
-    console.log(`Deleted ${count} rows for papaji_tractor_01.`);
+    .select('id')
+    .order('created_at', { ascending: false })
+    .limit(5);
+  
+  for (const row of data) {
+      console.log(`Deleting ID ${row.id}...`);
+      const { error, count } = await supabase.from('tracking_history').delete({ count: 'exact' }).eq('id', row.id);
+      if (error) console.log(error);
+      else console.log(`Deleted: ${count}`);
   }
 }
 

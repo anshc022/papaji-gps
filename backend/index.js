@@ -9,6 +9,21 @@ const PORT = process.env.PORT || 3000;
 // In-memory state for alerts
 const deviceState = {}; 
 
+// In-memory logs (last 100)
+const serverLogs = [];
+const MAX_LOGS = 100;
+
+function addLog(type, message) {
+  const entry = {
+    time: new Date().toISOString(),
+    type: type,
+    message: message
+  };
+  serverLogs.unshift(entry);
+  if (serverLogs.length > MAX_LOGS) serverLogs.pop();
+  console.log(`[${type}] ${message}`);
+}
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -125,7 +140,7 @@ app.post('/api/telemetry', async (req, res) => {
         // sendPushNotification(devId, 'Tractor Stopped', 'Engine is off.');
     }
 
-    console.log(`[${new Date().toLocaleTimeString()}] Data received from ${points[0].device_id} (${points.length} pts). Source: ${latest.source || 'unknown'}`);
+    addLog('DATA', `Received ${points.length} pts from ${points[0].device_id}. Source: ${latest.source || 'unknown'}, Signal: ${latest.signal || 0}`);
     
     res.json({ status: 'ok' });
 
@@ -274,6 +289,16 @@ app.post('/api/diagnose', async (req, res) => {
   }
 
   return res.json({ status: 'Healthy', message: 'System running perfectly.', color: 'green' });
+});
+
+// --- 5. Server Logs Endpoint (For Developer Tab) ---
+app.get('/api/logs', (req, res) => {
+  res.json({
+    logs: serverLogs,
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    nodeVersion: process.version
+  });
 });
 
 // --- Helpers ---

@@ -1,0 +1,258 @@
+import { useTheme } from '@/context/ThemeContext';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import React, { useState, useEffect } from 'react';
+import { 
+  View, 
+  Text, 
+  TextInput, 
+  TouchableOpacity, 
+  ScrollView, 
+  Alert,
+  RefreshControl 
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { api } from '@/services/api';
+import Config from '@/constants/Config';
+
+const SECRET_PIN = '1234'; // Change this to your desired PIN
+
+export default function DeveloperScreen() {
+  const { activeTheme } = useTheme();
+  const isDark = activeTheme === 'dark';
+  
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [pin, setPin] = useState('');
+  const [logs, setLogs] = useState<string[]>([]);
+  const [serverLogs, setServerLogs] = useState<any[]>([]);
+  const [dbStats, setDbStats] = useState<any>(null);
+  const [serverStatus, setServerStatus] = useState<string>('Checking...');
+  const [serverInfo, setServerInfo] = useState<any>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [showServerLogs, setShowServerLogs] = useState(true);
+
+  const addLog = (msg: string) => {
+    const time = new Date().toLocaleTimeString();
+    setLogs(prev => [`[${time}] ${msg}`, ...prev.slice(0, 99)]);
+  };
+
+  const checkPin = () => {
+    if (pin === SECRET_PIN) {
+      setIsUnlocked(true);
+      addLog('Developer mode unlocked');
+    } else {
+      Alert.alert('Wrong PIN', 'Access denied');
+      setPin('');
+    }
+  };
+
+  const loadData = async () => {
+    setRefreshing(true);
+    addLog('Fetching data...');
+
+    // Check Server
+    try {
+      const res = await fetch(`${Config.API_URL}/api/stats?device_id=papaji_tractor_01`);
+      if (res.ok) {
+        const data = await res.json();
+        setDbStats(data);
+        setServerStatus(`Online (${res.status})`);
+        addLog(`Server OK. Points: ${data.total_points}`);
+      } else {
+        setServerStatus(`Error: ${res.status}`);
+        addLog(`Server Error: ${res.status}`);
+      }
+    } catch (e: any) {
+      setServerStatus('Offline');
+      addLog(`Server Offline: ${e.message}`);
+    }
+
+    // Fetch Server Logs
+    try {
+      const logsRes = await fetch(`${Config.API_URL}/api/logs`);
+      if (logsRes.ok) {
+        const logsData = await logsRes.json();
+        setServerLogs(logsData.logs || []);
+        setServerInfo({
+          uptime: Math.round(logsData.uptime / 60),
+          memory: Math.round(logsData.memory?.heapUsed / 1024 / 1024),
+          nodeVersion: logsData.nodeVersion
+        });
+        addLog(`Fetched ${logsData.logs?.length || 0} server logs`);
+      }
+    } catch (e: any) {
+      addLog(`Failed to fetch server logs: ${e.message}`);
+    }
+
+    setRefreshing(false);
+  };
+
+  useEffect(() => {
+    if (isUnlocked) loadData();
+  }, [isUnlocked]);
+
+  const testPush = async () => {
+    addLog('Testing push notification...');
+    try {
+      const res = await fetch(`${Config.API_URL}/api/diagnose`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: 'papaji_tractor_01' })
+      });
+      const data = await res.json();
+      addLog(`Diagnose: ${data.status} - ${data.message}`);
+    } catch (e: any) {
+      addLog(`Diagnose failed: ${e.message}`);
+    }
+  };
+
+  const clearLogs = () => {
+    setLogs([]);
+    addLog('Logs cleared');
+  };
+
+  // PIN Entry Screen
+  if (!isUnlocked) {
+    return (
+      <SafeAreaView className="flex-1 bg-gray-100 dark:bg-dark-bg items-center justify-center p-6">
+        <MaterialCommunityIcons name="lock" size={60} color={isDark ? '#666' : '#ccc'} />
+        <Text className="text-2xl font-bold text-black dark:text-white mt-4 mb-2">Developer Mode</Text>
+        <Text className="text-gray-500 dark:text-gray-400 mb-6">Enter PIN to unlock</Text>
+        
+        <TextInput
+          value={pin}
+          onChangeText={setPin}
+          placeholder="Enter PIN"
+          placeholderTextColor="#888"
+          keyboardType="number-pad"
+          secureTextEntry
+          maxLength={4}
+          className="bg-white dark:bg-dark-card text-black dark:text-white text-center text-2xl tracking-widest w-48 py-4 rounded-xl mb-4"
+        />
+        
+        <TouchableOpacity 
+          onPress={checkPin}
+          className="bg-primary px-8 py-3 rounded-xl"
+        >
+          <Text className="text-white font-bold text-lg">Unlock</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
+
+  // Developer Dashboard
+  return (
+    <SafeAreaView className="flex-1 bg-gray-100 dark:bg-dark-bg">
+      <ScrollView 
+        className="flex-1 p-4"
+        contentContainerStyle={{ paddingBottom: 120 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadData} />}
+      >
+        {/* Header */}
+        <View className="flex-row items-center justify-between mb-4">
+          <Text className="text-2xl font-bold text-black dark:text-white">🛠 Developer</Text>
+          <TouchableOpacity onPress={() => setIsUnlocked(false)} className="bg-red-500 px-3 py-2 rounded-lg">
+            <Text className="text-white font-bold">Lock</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Server Status */}
+        <View className="bg-white dark:bg-dark-card rounded-2xl p-4 mb-4">
+          <Text className="text-gray-500 dark:text-gray-400 text-sm mb-1">Server Status</Text>
+          <Text className={`text-lg font-bold ${serverStatus.includes('Online') ? 'text-green-500' : 'text-red-500'}`}>
+            {serverStatus}
+          </Text>
+          <Text className="text-gray-400 text-xs mt-1">{Config.API_URL}</Text>
+          {serverInfo && (
+            <View className="flex-row mt-2 gap-4">
+              <Text className="text-gray-400 text-xs">⏱ {serverInfo.uptime}m uptime</Text>
+              <Text className="text-gray-400 text-xs">💾 {serverInfo.memory}MB</Text>
+              <Text className="text-gray-400 text-xs">📦 {serverInfo.nodeVersion}</Text>
+            </View>
+          )}
+        </View>
+
+        {/* DB Stats */}
+        {dbStats && (
+          <View className="bg-white dark:bg-dark-card rounded-2xl p-4 mb-4">
+            <Text className="text-gray-500 dark:text-gray-400 text-sm mb-2">Database Stats</Text>
+            <View className="flex-row flex-wrap">
+              <StatBox label="Total Points" value={dbStats.total_points} />
+              <StatBox label="Status" value={dbStats.status} />
+              <StatBox label="Source" value={dbStats.source} />
+              <StatBox label="Signal" value={dbStats.signal} />
+              <StatBox label="Max Speed" value={`${dbStats.max_speed} km/h`} />
+              <StatBox label="Distance" value={`${dbStats.total_distance_km} km`} />
+            </View>
+          </View>
+        )}
+
+        {/* Actions */}
+        <View className="flex-row gap-3 mb-4">
+          <TouchableOpacity onPress={loadData} className="flex-1 bg-blue-500 py-3 rounded-xl items-center">
+            <Text className="text-white font-bold">Refresh</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={testPush} className="flex-1 bg-purple-500 py-3 rounded-xl items-center">
+            <Text className="text-white font-bold">Diagnose</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={clearLogs} className="flex-1 bg-gray-500 py-3 rounded-xl items-center">
+            <Text className="text-white font-bold">Clear Logs</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Logs Toggle */}
+        <View className="flex-row gap-2 mb-4">
+          <TouchableOpacity 
+            onPress={() => setShowServerLogs(true)} 
+            className={`flex-1 py-2 rounded-xl items-center ${showServerLogs ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
+          >
+            <Text className={`font-bold ${showServerLogs ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>Server Logs</Text>
+          </TouchableOpacity>
+          <TouchableOpacity 
+            onPress={() => setShowServerLogs(false)} 
+            className={`flex-1 py-2 rounded-xl items-center ${!showServerLogs ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
+          >
+            <Text className={`font-bold ${!showServerLogs ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>App Logs</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Logs */}
+        <View className="bg-black rounded-2xl p-4">
+          <Text className="text-green-400 font-mono text-xs mb-2">
+            📋 {showServerLogs ? `Server Logs (${serverLogs.length})` : `App Logs (${logs.length})`}
+          </Text>
+          {showServerLogs ? (
+            serverLogs.length === 0 ? (
+              <Text className="text-gray-500 font-mono text-xs">No server logs yet...</Text>
+            ) : (
+              serverLogs.map((log, i) => (
+                <View key={i} className="mb-2">
+                  <Text className="text-gray-500 font-mono text-[10px]">{new Date(log.time).toLocaleTimeString()}</Text>
+                  <Text className={`font-mono text-xs ${log.type === 'DATA' ? 'text-cyan-400' : log.type === 'ERROR' ? 'text-red-400' : 'text-green-300'}`}>
+                    [{log.type}] {log.message}
+                  </Text>
+                </View>
+              ))
+            )
+          ) : (
+            logs.length === 0 ? (
+              <Text className="text-gray-500 font-mono text-xs">No logs yet...</Text>
+            ) : (
+              logs.map((log, i) => (
+                <Text key={i} className="text-green-300 font-mono text-xs mb-1">{log}</Text>
+              ))
+            )
+          )}
+        </View>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function StatBox({ label, value }: { label: string; value: any }) {
+  return (
+    <View className="w-1/2 mb-2">
+      <Text className="text-gray-400 text-xs">{label}</Text>
+      <Text className="text-black dark:text-white font-bold">{value ?? '-'}</Text>
+    </View>
+  );
+}

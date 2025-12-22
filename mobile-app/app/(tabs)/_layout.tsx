@@ -67,6 +67,15 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="developer"
+        options={{
+          title: 'Dev',
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="code-tags" size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }
