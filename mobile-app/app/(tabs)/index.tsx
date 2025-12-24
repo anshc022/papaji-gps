@@ -15,9 +15,8 @@ import * as Speech from 'expo-speech';
 
 import { ThemedView } from '@/components/themed-view';
 import { ThemedText } from '@/components/themed-text';
-import { TractorStatusCard } from '@/components/TractorStatusCard';
-import { useMapContext } from '@/context/MapContext';
-import { useThemeContext } from '@/context/ThemeContext';
+import { useMapType } from '@/context/MapContext';
+import { useTheme } from '@/context/ThemeContext';
 import { api } from '@/services/api';
 
 // ============================================
@@ -47,7 +46,7 @@ interface Stats {
   active_time_hours: string;
   data_points: number;
   stops: StopPoint[];
-  last_update: string;
+  last_update: string | null;
 }
 
 type ViewMode = 'gps' | 'gsm' | 'both';
@@ -72,8 +71,9 @@ const DEFAULT_REGION = {
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
-  const { mapTheme } = useMapContext();
-  const { isDarkMode } = useThemeContext();
+  const { mapType } = useMapType();
+  const { activeTheme } = useTheme();
+  const isDarkMode = activeTheme === 'dark';
 
   // State
   const [stats, setStats] = useState<Stats | null>(null);
@@ -252,7 +252,7 @@ export default function DashboardScreen() {
           latitudeDelta: 0.01,
           longitudeDelta: 0.01,
         } : DEFAULT_REGION}
-        customMapStyle={mapTheme}
+        mapType={mapType}
         showsUserLocation={false}
         showsCompass={false}
       >
@@ -475,7 +475,8 @@ interface StatItemProps {
 }
 
 function StatItem({ icon, value, label, unit }: StatItemProps) {
-  const { isDarkMode } = useThemeContext();
+  const { activeTheme } = useTheme();
+  const isDarkMode = activeTheme === 'dark';
   
   return (
     <View className="items-center">
