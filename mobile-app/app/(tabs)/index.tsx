@@ -42,7 +42,16 @@ export default function DashboardScreen() {
   const loadStats = async () => {
     try {
       const data = await api.getStats('papaji_tractor_01');
-      setStats(data);
+      if (data) {
+        setStats({
+          max_speed: data.max_speed || 0,
+          total_distance_km: data.total_distance_km || 0,
+          total_duration_minutes: data.total_duration_minutes || 0,
+          status: data.status || 'Offline',
+          source: data.source || 'gps',
+          signal: data.signal || 0
+        });
+      }
     } catch (e) {
       console.log('Failed to load stats');
     }

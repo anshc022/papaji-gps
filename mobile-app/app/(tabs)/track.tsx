@@ -155,13 +155,17 @@ export default function TrackScreen() {
   const handleDiagnose = async () => {
     setIsDiagnosing(true);
     try {
-      const result = await api.diagnoseSystem('papaji_tractor_01');
+      const result = await api.getDiagnosis('papaji_tractor_01');
       
-      Alert.alert(
-        `System Status: ${result.status}`,
-        result.message,
-        [{ text: 'OK' }]
-      );
+      if (result) {
+        Alert.alert(
+          `System Status: ${result.status}`,
+          result.message,
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert('Error', 'No response from server');
+      }
     } catch (e) {
       Alert.alert('Error', 'Could not connect to server');
     } finally {
@@ -171,46 +175,9 @@ export default function TrackScreen() {
 
   const handleLearningOptions = async () => {
     Alert.alert(
-      "Route Learning Options",
-      "Manage the 'Safe Route' learning system.",
-      [
-        { text: "Cancel", style: "cancel" },
-        { 
-          text: "Start New Learning", 
-          onPress: async () => {
-            Alert.alert(
-              "Confirm Start",
-              "This will overwrite any existing route data. The system will learn for 48 hours.",
-              [
-                { text: "Cancel", style: "cancel" },
-                { 
-                  text: "Start", 
-                  onPress: async () => {
-                    try {
-                      await api.startLearning('papaji_tractor_01');
-                      Alert.alert("Success", "Learning Mode Started.");
-                    } catch (e) {
-                      Alert.alert("Error", "Failed to start.");
-                    }
-                  }
-                }
-              ]
-            );
-          }
-        },
-        {
-          text: "Delete Learned Data",
-          style: "destructive",
-          onPress: async () => {
-             try {
-               await api.deleteLearning('papaji_tractor_01');
-               Alert.alert("Deleted", "Route and Speed data cleared.");
-             } catch (e) {
-               Alert.alert("Error", "Failed to delete.");
-             }
-          }
-        }
-      ]
+      "Route Learning",
+      "This feature is coming soon! Route learning will help identify unusual movements.",
+      [{ text: "OK" }]
     );
   };
 
