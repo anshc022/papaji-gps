@@ -101,15 +101,14 @@ export default function DeveloperScreen() {
   }, [isUnlocked]);
 
   const testPush = async () => {
-    addLog('Testing push notification...');
+    addLog('Testing device diagnosis...');
     try {
-      const res = await fetch(`${Config.API_URL}/api/diagnose`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: 'papaji_tractor_01' })
-      });
-      const data = await res.json();
-      addLog(`Diagnose: ${data.status} - ${data.message}`);
+      const data = await api.getDiagnosis('papaji_tractor_01');
+      if (data) {
+        addLog(`Diagnose: ${data.status} - ${data.message}`);
+      } else {
+        addLog('Diagnose: No response');
+      }
     } catch (e: any) {
       addLog(`Diagnose failed: ${e.message}`);
     }

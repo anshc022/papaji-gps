@@ -128,7 +128,21 @@ void setup() {
 
   Serial.println("[...] Initializing modem...");
   esp_task_wdt_reset();
+  
+  // Power stabilization delay for SIM800L
+  Serial.println("[...] Waiting for modem power stabilization...");
+  delay(3000);
+  
   modem.restart();
+  delay(3000); // Extra delay after restart
+  
+  // Test modem communication first
+  Serial.print("[NET] Testing modem communication... ");
+  if (modem.testAT()) {
+    Serial.println("OK");
+  } else {
+    Serial.println("FAIL - Check power supply!");
+  }
   
   connectToNetwork();
   
@@ -138,15 +152,22 @@ void setup() {
 
 void connectToNetwork() {
   esp_task_wdt_reset();
+  
+  // Check signal first
+  int sig = modem.getSignalQuality();
+  Serial.printf("[NET] Signal Quality: %d/31\n", sig);
+  
+  if (sig == 0) {
+    Serial.println("[NET] No signal! Check: SIM card, antenna, power supply");
+    return;
+  }
+  
   Serial.print("[NET] Checking Network Registration...");
-  if (!modem.waitForNetwork(60000L)) {
+  if (!modem.waitForNetwork(30000L)) { // Reduced from 60s to 30s
     Serial.println(" FAIL");
     return;
   }
   Serial.println(" OK");
-  
-  int sig = modem.getSignalQuality();
-  Serial.printf("[NET] Signal Quality: %d/31\n", sig);
 
   Serial.print("[NET] Connecting to APN: ");
   if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
@@ -244,6 +265,15 @@ void loop() {
       Serial.println("[GPS] No fix. Trying GSM Location...");
       
       if (modem.getGsmLocation(&gsmLat, &gsmLon, &accuracy, &year, &month, &day, &time)) {
+        // FIX: SIM800L sometimes returns lon,lat instead of lat,lon
+        // Latitude must be between -90 and 90
+        if (abs(gsmLat) > 90) {
+          float temp = gsmLat;
+          gsmLat = gsmLon;
+          gsmLon = temp;
+          Serial.println("[GSM] Coordinates were swapped - fixed!");
+        }
+        
         lat = gsmLat;
         lon = gsmLon;
         source = "gsm";
@@ -494,6 +524,13 @@ void sendLocationSMS() {
     float gsmLat = 0, gsmLon = 0, accuracy = 0;
     int year = 0, month = 0, day = 0, time = 0;
     if (modem.getGsmLocation(&gsmLat, &gsmLon, &accuracy, &year, &month, &day, &time)) {
+      // FIX: SIM800L sometimes returns lon,lat instead of lat,lon
+      if (abs(gsmLat) > 90) {
+        float temp = gsmLat;
+        gsmLat = gsmLon;
+        gsmLon = temp;
+      }
+      
       message = "Papaji Tractor (GSM):\n";
       message += "https://maps.google.com/?q=" + String(gsmLat, 6) + "," + String(gsmLon, 6) + "\n";
       message += "Cell accuracy: ~" + String(accuracy, 0) + "m";

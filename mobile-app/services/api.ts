@@ -116,32 +116,34 @@ export const api = {
   /**
    * Get latest GPS location
    */
-  async getLatest(): Promise<LocationPoint | null> {
-    return request<LocationPoint>('/api/latest');
+  async getLatest(deviceId: string): Promise<LocationPoint | null> {
+    return request<LocationPoint>(`/api/latest?device_id=${deviceId}`);
   },
 
   /**
    * Get location history
+   * @param deviceId Device identifier
    * @param hours Number of hours to fetch (default: 24)
    */
-  async getHistory(hours = 24): Promise<LocationPoint[]> {
-    const data = await request<LocationPoint[]>(`/api/history?hours=${hours}`);
+  async getHistory(deviceId: string, hours = 24): Promise<LocationPoint[]> {
+    const data = await request<LocationPoint[]>(`/api/history?device_id=${deviceId}&hours=${hours}`);
     return data || [];
   },
 
   /**
    * Get today's statistics
    */
-  async getStats(): Promise<Stats | null> {
-    return request<Stats>('/api/stats');
+  async getStats(deviceId: string): Promise<any | null> {
+    return request<any>(`/api/stats?device_id=${deviceId}`);
   },
 
   /**
    * Get stop locations
+   * @param deviceId Device identifier
    * @param hours Number of hours to analyze (default: 24)
    */
-  async getStops(hours = 24): Promise<StopPoint[]> {
-    const data = await request<StopPoint[]>(`/api/stops?hours=${hours}`);
+  async getStops(deviceId: string, hours = 24): Promise<StopPoint[]> {
+    const data = await request<StopPoint[]>(`/api/stops?device_id=${deviceId}&hours=${hours}`);
     return data || [];
   },
 
@@ -173,21 +175,48 @@ export const api = {
 
   /**
    * Reset device
-   * @param type 'hard' = full restart, 'soft' = reconnect only
+   * @param deviceId Device identifier
+   * @param pin Security PIN
    */
-  async resetDevice(type: 'hard' | 'soft'): Promise<boolean> {
+  async resetDevice(deviceId: string, pin: string): Promise<boolean> {
     const result = await request('/api/admin/reset-device', {
       method: 'POST',
-      body: JSON.stringify({ type }),
+      body: JSON.stringify({ device_id: deviceId, type: 'hard', pin }),
     });
     return result !== null;
   },
 
   /**
-   * Clear all GPS/GSM data
+   * Soft reconnect device
+   * @param deviceId Device identifier  
+   * @param pin Security PIN
    */
-  async clearAllData(): Promise<boolean> {
-    const result = await request('/api/admin/data', { method: 'DELETE' });
+  async reconnectDevice(deviceId: string, pin: string): Promise<boolean> {
+    const result = await request('/api/admin/reset-device', {
+      method: 'POST',
+      body: JSON.stringify({ device_id: deviceId, type: 'soft', pin }),
+    });
+    return result !== null;
+  },
+
+  /**
+   * Delete SMS from inbox
+   * @param id SMS ID
+   */
+  async deleteSms(id: number): Promise<boolean> {
+    const result = await request(`/api/admin/sms/${id}`, { method: 'DELETE' });
+    return result !== null;
+  },
+
+  /**
+   * Clear all GPS/GSM data
+   * @param pin Security PIN (default: 1477)
+   */
+  async clearAllData(pin = '1477'): Promise<boolean> {
+    const result = await request('/api/admin/clear-data', { 
+      method: 'POST',
+      body: JSON.stringify({ pin })
+    });
     return result !== null;
   },
 
@@ -195,8 +224,15 @@ export const api = {
    * Check server health
    */
   async healthCheck(): Promise<boolean> {
-    const result = await request<{ status: string }>('/api/health');
-    return result?.status === 'healthy';
+    const result = await request<{ status: string }>('/api/logs');
+    return result !== null;
+  },
+
+  /**
+   * Get device diagnosis
+   */
+  async getDiagnosis(deviceId: string): Promise<any | null> {
+    return request<any>(`/api/diagnose?device_id=${deviceId}`);
   },
 };
 

@@ -514,7 +514,7 @@ export default function DashboardScreen() {
               className={`p-3 rounded-full shadow-lg items-center justify-center ${viewMode === 'gps' ? 'bg-white dark:bg-dark-card' : 'bg-purple-100 dark:bg-purple-900'}`}
               style={{ width: 50, height: 50 }}
             >
-              <MaterialCommunityIcons name={viewMode === 'gps' ? "satellite-uplink" : "access-point-network"} size={24} color={viewMode === 'gps' ? (isDark ? "black" : "white") : "#9333EA"} />
+              <MaterialCommunityIcons name={viewMode === 'gps' ? "satellite-uplink" : "access-point-network"} size={24} color={viewMode === 'gps' ? (isDark ? "white" : "#333") : "#9333EA"} />
             </TouchableOpacity>
 
             <TouchableOpacity 
