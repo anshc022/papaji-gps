@@ -331,8 +331,8 @@ app.get('/api/latest', async (req, res) => {
 });
 
 // --- 4. Diagnosis Endpoint ---
-app.post('/api/diagnose', async (req, res) => {
-  const { device_id } = req.body;
+app.get('/api/diagnose', async (req, res) => {
+  const { device_id } = req.query;
   if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
 
   // Use getBestLatestPoint instead of non-existent tracking_history table
