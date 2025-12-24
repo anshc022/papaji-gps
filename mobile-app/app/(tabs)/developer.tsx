@@ -11,10 +11,11 @@ import {
   RefreshControl 
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { api } from '@/services/api';
 import Config from '@/constants/Config';
 
-const SECRET_PIN = '1477'; // Change this to your desired PIN
+const SECRET_PIN = '1477';
 
 export default function DeveloperScreen() {
   const { activeTheme } = useTheme();
@@ -50,16 +51,15 @@ export default function DeveloperScreen() {
     setRefreshing(true);
     addLog('Fetching data...');
 
-    // Check Server
     try {
       const res = await fetch(`${Config.API_URL}/api/stats?device_id=papaji_tractor_01`);
       if (res.ok) {
         const data = await res.json();
         setDbStats(data);
-        setServerStatus(`Online (${res.status})`);
-        addLog(`Server OK. Points: ${data.total_points}`);
+        setServerStatus('Online');
+        addLog(`Server OK. Points: ${data.total_points || 0}`);
       } else {
-        setServerStatus(`Error: ${res.status}`);
+        setServerStatus('Error');
         addLog(`Server Error: ${res.status}`);
       }
     } catch (e: any) {
@@ -67,30 +67,26 @@ export default function DeveloperScreen() {
       addLog(`Server Offline: ${e.message}`);
     }
 
-    // Fetch Server Logs
     try {
       const logsRes = await fetch(`${Config.API_URL}/api/logs`);
       if (logsRes.ok) {
         const logsData = await logsRes.json();
         setServerLogs(logsData.logs || []);
         setServerInfo({
-          uptime: Math.round(logsData.uptime / 60),
-          memory: Math.round(logsData.memory?.heapUsed / 1024 / 1024),
-          nodeVersion: logsData.nodeVersion
+          uptime: Math.round((logsData.uptime || 0) / 60),
+          memory: Math.round((logsData.memory?.heapUsed || 0) / 1024 / 1024),
+          nodeVersion: logsData.nodeVersion || 'N/A'
         });
-        addLog(`Fetched ${logsData.logs?.length || 0} server logs`);
       }
     } catch (e: any) {
-      addLog(`Failed to fetch server logs: ${e.message}`);
+      addLog(`Failed to fetch server logs`);
     }
 
-    // Fetch SMS Inbox
     try {
       const sms = await api.getSmsInbox();
       setSmsInbox(sms || []);
-      addLog(`Fetched ${sms?.length || 0} SMS`);
     } catch (e: any) {
-      addLog(`Failed to fetch SMS: ${e.message}`);
+      addLog(`Failed to fetch SMS`);
     }
 
     setRefreshing(false);
@@ -100,39 +96,39 @@ export default function DeveloperScreen() {
     if (isUnlocked) loadData();
   }, [isUnlocked]);
 
-  const testPush = async () => {
-    addLog('Testing device diagnosis...');
+  const testDiagnose = async () => {
+    addLog('Running diagnosis...');
     try {
       const data = await api.getDiagnosis('papaji_tractor_01');
       if (data) {
-        addLog(`Diagnose: ${data.status} - ${data.message}`);
+        addLog(`✅ ${data.status}: ${data.message}`);
+        Alert.alert(data.status, data.message);
       } else {
-        addLog('Diagnose: No response');
+        addLog('❌ No response');
       }
     } catch (e: any) {
-      addLog(`Diagnose failed: ${e.message}`);
+      addLog(`❌ Diagnose failed: ${e.message}`);
     }
   };
 
   const handleClearData = () => {
     Alert.alert(
-      '⚠️ DANGER ZONE',
-      'Are you sure you want to DELETE ALL HISTORY? This cannot be undone.',
+      '⚠️ Delete All Data',
+      'This will permanently delete all GPS history. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
         { 
-          text: 'DELETE EVERYTHING', 
+          text: 'Delete', 
           style: 'destructive',
           onPress: async () => {
             try {
               addLog('Clearing database...');
               await api.clearAllData(SECRET_PIN);
-              addLog('✅ Database Cleared Successfully');
-              Alert.alert('Success', 'All data has been wiped.');
-              loadData(); // Refresh stats
+              addLog('✅ Database Cleared');
+              Alert.alert('Success', 'All data deleted.');
+              loadData();
             } catch (e: any) {
-              addLog(`❌ Clear Failed: ${e.message}`);
-              Alert.alert('Error', e.message);
+              addLog(`❌ Failed: ${e.message}`);
             }
           }
         }
@@ -140,24 +136,23 @@ export default function DeveloperScreen() {
     );
   };
 
-  const handleResetDevice = () => {
+  const handleResetDevice = async () => {
     Alert.alert(
-      '⚠️ HARD RESET',
-      'This will force the device to restart immediately. Are you sure?',
+      'Hard Reset',
+      'This will restart the ESP32 device. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
         { 
-          text: 'RESET DEVICE', 
+          text: 'Reset', 
           style: 'destructive',
           onPress: async () => {
             try {
               addLog('Sending reset command...');
               await api.resetDevice('papaji_tractor_01', SECRET_PIN);
-              addLog('✅ Reset Command Sent');
-              Alert.alert('Success', 'Reset command queued. Device will restart on next sync.');
+              addLog('✅ Reset command sent');
+              Alert.alert('Success', 'Device will restart on next sync.');
             } catch (e: any) {
-              addLog(`❌ Reset Failed: ${e.message}`);
-              Alert.alert('Error', e.message);
+              addLog(`❌ Failed: ${e.message}`);
             }
           }
         }
@@ -165,28 +160,15 @@ export default function DeveloperScreen() {
     );
   };
 
-  const handleReconnectDevice = () => {
-    Alert.alert(
-      'Soft Reset',
-      'This will force the device to reconnect to the network. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Reconnect', 
-          onPress: async () => {
-            try {
-              addLog('Sending reconnect command...');
-              await api.reconnectDevice('papaji_tractor_01', SECRET_PIN);
-              addLog('✅ Reconnect Command Sent');
-              Alert.alert('Success', 'Reconnect command queued.');
-            } catch (e: any) {
-              addLog(`❌ Reconnect Failed: ${e.message}`);
-              Alert.alert('Error', e.message);
-            }
-          }
-        }
-      ]
-    );
+  const handleReconnect = async () => {
+    try {
+      addLog('Sending reconnect command...');
+      await api.reconnectDevice('papaji_tractor_01', SECRET_PIN);
+      addLog('✅ Reconnect command sent');
+      Alert.alert('Success', 'Device will reconnect on next sync.');
+    } catch (e: any) {
+      addLog(`❌ Failed: ${e.message}`);
+    }
   };
 
   const handleDeleteSms = async (id: number) => {
@@ -195,287 +177,301 @@ export default function DeveloperScreen() {
       setSmsInbox(prev => prev.filter(s => s.id !== id));
       addLog('SMS Deleted');
     } catch (e: any) {
-      addLog(`Failed to delete SMS: ${e.message}`);
+      addLog(`Failed to delete SMS`);
     }
-  };
-
-  const clearLogs = () => {
-    setLogs([]);
-    addLog('Logs cleared');
   };
 
   // PIN Entry Screen
   if (!isUnlocked) {
     return (
-      <SafeAreaView className="flex-1 bg-gray-100 dark:bg-dark-bg items-center justify-center p-6">
-        <MaterialCommunityIcons name="lock" size={60} color={isDark ? '#666' : '#ccc'} />
-        <Text className="text-2xl font-bold text-black dark:text-white mt-4 mb-2">Developer Mode</Text>
-        <Text className="text-gray-500 dark:text-gray-400 mb-6">Enter PIN to unlock</Text>
-        
-        <TextInput
-          value={pin}
-          onChangeText={setPin}
-          placeholder="Enter PIN"
-          placeholderTextColor="#888"
-          keyboardType="number-pad"
-          secureTextEntry
-          maxLength={4}
-          className="bg-white dark:bg-dark-card text-black dark:text-white text-center text-2xl tracking-widest w-48 py-4 rounded-xl mb-4"
-        />
-        
-        <TouchableOpacity 
-          onPress={checkPin}
-          className="bg-primary px-8 py-3 rounded-xl"
-        >
-          <Text className="text-white font-bold text-lg">Unlock</Text>
-        </TouchableOpacity>
+      <SafeAreaView className={`flex-1 items-center justify-center p-6 ${isDark ? 'bg-[#0a0a0a]' : 'bg-gray-50'}`}>
+        <Animated.View entering={FadeInDown.springify()} className="items-center">
+          <View className={`w-24 h-24 rounded-full items-center justify-center mb-6 ${isDark ? 'bg-gray-800' : 'bg-gray-200'}`}>
+            <MaterialCommunityIcons name="shield-lock" size={48} color={isDark ? '#666' : '#999'} />
+          </View>
+          
+          <Text className={`text-2xl font-bold mb-2 ${isDark ? 'text-white' : 'text-gray-900'}`}>
+            Developer Access
+          </Text>
+          <Text className={`text-sm mb-8 ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>
+            Enter PIN to continue
+          </Text>
+          
+          <TextInput
+            value={pin}
+            onChangeText={setPin}
+            placeholder="• • • •"
+            placeholderTextColor={isDark ? '#444' : '#ccc'}
+            keyboardType="number-pad"
+            secureTextEntry
+            maxLength={4}
+            className={`text-center text-3xl tracking-[20px] w-56 py-4 rounded-2xl mb-6 font-bold ${
+              isDark ? 'bg-gray-800 text-white' : 'bg-white text-gray-900 border border-gray-200'
+            }`}
+          />
+          
+          <TouchableOpacity 
+            onPress={checkPin}
+            className="bg-[#FF5500] px-12 py-4 rounded-2xl shadow-lg"
+            style={{ shadowColor: '#FF5500', shadowOpacity: 0.4, shadowRadius: 12, elevation: 8 }}
+          >
+            <Text className="text-white font-bold text-lg">Unlock</Text>
+          </TouchableOpacity>
+        </Animated.View>
       </SafeAreaView>
     );
   }
 
   // Developer Dashboard
   return (
-    <SafeAreaView className="flex-1 bg-gray-100 dark:bg-dark-bg">
+    <SafeAreaView className={`flex-1 ${isDark ? 'bg-[#0a0a0a]' : 'bg-gray-50'}`}>
       <ScrollView 
-        className="flex-1 p-4"
-        contentContainerStyle={{ paddingBottom: 120 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadData} />}
+        className="flex-1"
+        contentContainerStyle={{ paddingBottom: 120, paddingHorizontal: 16 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadData} tintColor={isDark ? '#fff' : '#000'} />}
+        showsVerticalScrollIndicator={false}
       >
         {/* Header */}
-        <View className="flex-row items-center justify-between mb-4">
-          <Text className="text-2xl font-bold text-black dark:text-white">🛠 Developer</Text>
-          <TouchableOpacity onPress={() => setIsUnlocked(false)} className="bg-red-500 px-3 py-2 rounded-lg">
-            <Text className="text-white font-bold">Lock</Text>
+        <Animated.View entering={FadeInUp.delay(100)} className="flex-row items-center justify-between py-4">
+          <View>
+            <Text className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>Developer</Text>
+            <Text className={`text-sm ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>System Controls</Text>
+          </View>
+          <TouchableOpacity 
+            onPress={() => setIsUnlocked(false)} 
+            className={`px-4 py-2 rounded-xl ${isDark ? 'bg-red-900/50' : 'bg-red-100'}`}
+          >
+            <Text className={`font-semibold ${isDark ? 'text-red-400' : 'text-red-600'}`}>Lock</Text>
           </TouchableOpacity>
-        </View>
+        </Animated.View>
 
-        {/* Server Status */}
-        <View className="bg-white dark:bg-dark-card rounded-2xl p-4 mb-4">
-          <Text className="text-gray-500 dark:text-gray-400 text-sm mb-1">Server Status</Text>
-          <Text className={`text-lg font-bold ${serverStatus.includes('Online') ? 'text-green-500' : 'text-red-500'}`}>
-            {serverStatus}
-          </Text>
-          <Text className="text-gray-400 text-xs mt-1">{Config.API_URL}</Text>
-          {serverInfo && (
-            <View className="flex-row mt-2 gap-4">
-              <Text className="text-gray-400 text-xs">⏱ {serverInfo.uptime}m uptime</Text>
-              <Text className="text-gray-400 text-xs">💾 {serverInfo.memory}MB</Text>
-              <Text className="text-gray-400 text-xs">📦 {serverInfo.nodeVersion}</Text>
-            </View>
-          )}
-        </View>
-
-        {/* DB Stats */}
-        {dbStats && (
-          <View className="bg-white dark:bg-dark-card rounded-2xl p-4 mb-4">
-            <Text className="text-gray-500 dark:text-gray-400 text-sm mb-2">Database Stats</Text>
-            <View className="flex-row flex-wrap">
-              <StatBox label="Total Points" value={dbStats.total_points} />
-              <StatBox label="Status" value={dbStats.status} />
-              <StatBox label="Max Speed" value={`${dbStats.max_speed} km/h`} />
-              <StatBox label="Distance" value={`${dbStats.total_distance_km} km`} />
+        {/* Server Status Card */}
+        <Animated.View entering={FadeInDown.delay(200)} className={`rounded-2xl p-4 mb-4 ${isDark ? 'bg-gray-900' : 'bg-white'}`}>
+          <View className="flex-row items-center justify-between mb-3">
+            <Text className={`font-semibold ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Server Status</Text>
+            <View className={`flex-row items-center px-3 py-1 rounded-full ${
+              serverStatus === 'Online' 
+                ? (isDark ? 'bg-green-900/50' : 'bg-green-100') 
+                : (isDark ? 'bg-red-900/50' : 'bg-red-100')
+            }`}>
+              <View className={`w-2 h-2 rounded-full mr-2 ${serverStatus === 'Online' ? 'bg-green-500' : 'bg-red-500'}`} />
+              <Text className={`text-sm font-medium ${
+                serverStatus === 'Online' 
+                  ? (isDark ? 'text-green-400' : 'text-green-700')
+                  : (isDark ? 'text-red-400' : 'text-red-700')
+              }`}>{serverStatus}</Text>
             </View>
           </View>
+          
+          <Text className={`text-xs mb-2 ${isDark ? 'text-gray-600' : 'text-gray-400'}`}>{Config.API_URL}</Text>
+          
+          {serverInfo && (
+            <View className="flex-row gap-4 mt-2">
+              <View className={`flex-1 p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                <Text className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>Uptime</Text>
+                <Text className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{serverInfo.uptime}m</Text>
+              </View>
+              <View className={`flex-1 p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                <Text className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>Memory</Text>
+                <Text className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{serverInfo.memory}MB</Text>
+              </View>
+              <View className={`flex-1 p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
+                <Text className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>Node</Text>
+                <Text className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{serverInfo.nodeVersion}</Text>
+              </View>
+            </View>
+          )}
+        </Animated.View>
+
+        {/* Device Stats */}
+        {dbStats && (
+          <Animated.View entering={FadeInDown.delay(300)} className={`rounded-2xl p-4 mb-4 ${isDark ? 'bg-gray-900' : 'bg-white'}`}>
+            <Text className={`font-semibold mb-3 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Device Statistics</Text>
+            <View className="flex-row flex-wrap gap-3">
+              <StatCard label="Points" value={dbStats.total_points || 0} icon="database" isDark={isDark} />
+              <StatCard label="Distance" value={`${dbStats.total_distance_km || 0} km`} icon="map-marker-distance" isDark={isDark} />
+              <StatCard label="Max Speed" value={`${dbStats.max_speed || 0} km/h`} icon="speedometer" isDark={isDark} />
+              <StatCard label="Source" value={dbStats.source?.toUpperCase() || 'N/A'} icon="satellite-uplink" isDark={isDark} color={dbStats.source === 'gps' ? '#22c55e' : '#eab308'} />
+            </View>
+          </Animated.View>
         )}
 
-        {/* ESP32 Live Telemetry */}
+        {/* ESP32 Telemetry */}
         {dbStats && (
-          <View className="bg-gradient-to-r from-gray-800 to-gray-900 dark:from-gray-900 dark:to-black rounded-2xl p-4 mb-4 border border-green-500/30">
-            <View className="flex-row items-center mb-3">
-              <Text className="text-green-400 text-lg font-bold">📡 ESP32 Live Telemetry</Text>
+          <Animated.View entering={FadeInDown.delay(400)} className={`rounded-2xl p-4 mb-4 border ${isDark ? 'bg-gray-900 border-green-900' : 'bg-white border-green-200'}`}>
+            <View className="flex-row items-center mb-4">
+              <MaterialCommunityIcons name="chip" size={20} color="#22c55e" />
+              <Text className={`font-semibold ml-2 ${isDark ? 'text-green-400' : 'text-green-700'}`}>ESP32 Telemetry</Text>
               <View className={`ml-auto w-2 h-2 rounded-full ${dbStats.status === 'Online' ? 'bg-green-500' : 'bg-red-500'}`} />
             </View>
-            
-            {/* GPS Section */}
-            <View className="bg-black/30 rounded-xl p-3 mb-3">
-              <Text className="text-gray-400 text-xs mb-2">🛰️ GPS DATA</Text>
+
+            <View className={`rounded-xl p-3 mb-3 ${isDark ? 'bg-black' : 'bg-gray-900'}`}>
+              <Text className="text-gray-500 text-[10px] mb-1 font-mono">// GPS DATA</Text>
               <View className="flex-row flex-wrap">
-                <TelemetryItem 
-                  label="Source" 
-                  value={dbStats.source?.toUpperCase() || 'N/A'} 
-                  color={dbStats.source === 'gps' ? 'text-green-400' : 'text-yellow-400'} 
-                />
-                <TelemetryItem 
-                  label="HDOP" 
-                  value={dbStats.hdop ? dbStats.hdop.toFixed(1) : 'N/A'} 
-                  color={getHdopColor(dbStats.hdop)}
-                  hint={getHdopHint(dbStats.hdop)}
-                />
-                <TelemetryItem 
-                  label="Satellites" 
-                  value={dbStats.satellites || 0} 
-                  color={dbStats.satellites >= 6 ? 'text-green-400' : dbStats.satellites >= 4 ? 'text-yellow-400' : 'text-red-400'} 
-                />
-                <TelemetryItem 
-                  label="Signal (GSM)" 
-                  value={`${dbStats.signal || 0} dBm`} 
-                  color={dbStats.signal > 15 ? 'text-green-400' : dbStats.signal > 10 ? 'text-yellow-400' : 'text-red-400'} 
-                />
+                <TelemetryItem label="HDOP" value={dbStats.hdop?.toFixed(1) || 'N/A'} color={getHdopColor(dbStats.hdop)} />
+                <TelemetryItem label="Satellites" value={dbStats.satellites || 0} color={dbStats.satellites >= 4 ? '#22c55e' : '#f59e0b'} />
+                <TelemetryItem label="Signal" value={`${dbStats.signal || 0}`} color={dbStats.signal > 15 ? '#22c55e' : '#f59e0b'} />
+                <TelemetryItem label="Speed" value={`${dbStats.last_speed?.toFixed(1) || 0} km/h`} color="#06b6d4" />
               </View>
             </View>
 
-            {/* Position Section */}
-            <View className="bg-black/30 rounded-xl p-3 mb-3">
-              <Text className="text-gray-400 text-xs mb-2">📍 LATEST POSITION</Text>
-              <View className="flex-row flex-wrap">
-                <TelemetryItem label="Latitude" value={dbStats.last_lat?.toFixed(6) || 'N/A'} color="text-cyan-400" />
-                <TelemetryItem label="Longitude" value={dbStats.last_lon?.toFixed(6) || 'N/A'} color="text-cyan-400" />
-                <TelemetryItem label="Speed" value={`${dbStats.last_speed?.toFixed(1) || 0} km/h`} color="text-white" />
-                <TelemetryItem 
-                  label="Last Update" 
-                  value={dbStats.last_seen ? new Date(dbStats.last_seen).toLocaleTimeString() : 'N/A'} 
-                  color="text-gray-300" 
-                />
-              </View>
-            </View>
-
-            {/* Serial-like output */}
-            <View className="bg-black rounded-xl p-3">
-              <Text className="text-gray-500 text-xs mb-1">// ESP32 Serial Output</Text>
-              <Text className="text-green-300 font-mono text-xs">
-                {dbStats.source === 'gps' 
-                  ? `GPS: ${dbStats.last_lat?.toFixed(6) || 0}, ${dbStats.last_lon?.toFixed(6) || 0} | HDOP: ${dbStats.hdop?.toFixed(1) || 'N/A'} | Sats: ${dbStats.satellites || 0}`
-                  : dbStats.source === 'gsm'
-                  ? `GSM Fallback: ${dbStats.last_lat?.toFixed(6) || 0}, ${dbStats.last_lon?.toFixed(6) || 0} | Signal: ${dbStats.signal || 0}`
-                  : 'Waiting for data...'
-                }
+            <View className={`rounded-xl p-3 ${isDark ? 'bg-black' : 'bg-gray-900'}`}>
+              <Text className="text-gray-500 text-[10px] mb-1 font-mono">// POSITION</Text>
+              <Text className="text-green-400 font-mono text-xs">
+                LAT: {dbStats.last_lat?.toFixed(6) || '0.000000'}
               </Text>
-              <Text className="text-gray-500 font-mono text-xs mt-1">
-                Signal Quality: {dbStats.signal || 0} | Speed: {dbStats.last_speed?.toFixed(1) || 0} km/h
+              <Text className="text-green-400 font-mono text-xs">
+                LON: {dbStats.last_lon?.toFixed(6) || '0.000000'}
+              </Text>
+              <Text className="text-gray-500 font-mono text-[10px] mt-2">
+                Last: {dbStats.last_seen ? new Date(dbStats.last_seen).toLocaleTimeString() : 'N/A'}
               </Text>
             </View>
-          </View>
+          </Animated.View>
         )}
 
-        {/* Actions */}
-        <View className="flex-row gap-3 mb-4 flex-wrap">
-          <TouchableOpacity onPress={loadData} className="flex-1 min-w-[45%] bg-blue-500 py-3 rounded-xl items-center">
-            <Text className="text-white font-bold">Refresh</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={testPush} className="flex-1 min-w-[45%] bg-purple-500 py-3 rounded-xl items-center">
-            <Text className="text-white font-bold">Diagnose</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={handleClearData} className="flex-1 min-w-[45%] bg-red-600 py-3 rounded-xl items-center">
-            <Text className="text-white font-bold">Wipe Data</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={handleResetDevice} className="flex-1 min-w-[45%] bg-orange-500 py-3 rounded-xl items-center">
-            <Text className="text-white font-bold">Hard Reset</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={handleReconnectDevice} className="flex-1 min-w-[45%] bg-yellow-500 py-3 rounded-xl items-center">
-            <Text className="text-white font-bold">Soft Reset</Text>
-          </TouchableOpacity>
-        </View>
+        {/* Action Buttons */}
+        <Animated.View entering={FadeInDown.delay(500)} className="mb-4">
+          <Text className={`font-semibold mb-3 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Actions</Text>
+          <View className="flex-row flex-wrap gap-3">
+            <ActionButton label="Refresh" icon="refresh" color="#3b82f6" onPress={loadData} isDark={isDark} />
+            <ActionButton label="Diagnose" icon="stethoscope" color="#8b5cf6" onPress={testDiagnose} isDark={isDark} />
+            <ActionButton label="Reconnect" icon="wifi-sync" color="#f59e0b" onPress={handleReconnect} isDark={isDark} />
+            <ActionButton label="Hard Reset" icon="restart" color="#f97316" onPress={handleResetDevice} isDark={isDark} />
+            <ActionButton label="Wipe Data" icon="delete-forever" color="#ef4444" onPress={handleClearData} isDark={isDark} />
+          </View>
+        </Animated.View>
 
-        {/* Logs Toggle */}
-        <View className="flex-row gap-2 mb-4">
-          <TouchableOpacity 
-            onPress={() => setLogViewMode('server')} 
-            className={`flex-1 py-2 rounded-xl items-center ${logViewMode === 'server' ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
-          >
-            <Text className={`font-bold ${logViewMode === 'server' ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>Server</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            onPress={() => setLogViewMode('sms')} 
-            className={`flex-1 py-2 rounded-xl items-center ${logViewMode === 'sms' ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
-          >
-            <Text className={`font-bold ${logViewMode === 'sms' ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>SMS ({smsInbox.length})</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            onPress={() => setLogViewMode('app')} 
-            className={`flex-1 py-2 rounded-xl items-center ${logViewMode === 'app' ? 'bg-primary' : 'bg-gray-300 dark:bg-gray-700'}`}
-          >
-            <Text className={`font-bold ${logViewMode === 'app' ? 'text-white' : 'text-gray-600 dark:text-gray-300'}`}>App</Text>
-          </TouchableOpacity>
-        </View>
+        {/* Log Tabs */}
+        <Animated.View entering={FadeInDown.delay(600)}>
+          <View className="flex-row gap-2 mb-3">
+            {(['server', 'sms', 'app'] as const).map((mode) => (
+              <TouchableOpacity 
+                key={mode}
+                onPress={() => setLogViewMode(mode)} 
+                className={`flex-1 py-2.5 rounded-xl items-center ${
+                  logViewMode === mode 
+                    ? 'bg-[#FF5500]' 
+                    : (isDark ? 'bg-gray-800' : 'bg-gray-200')
+                }`}
+              >
+                <Text className={`font-semibold text-sm ${
+                  logViewMode === mode 
+                    ? 'text-white' 
+                    : (isDark ? 'text-gray-400' : 'text-gray-600')
+                }`}>
+                  {mode === 'server' ? 'Server' : mode === 'sms' ? `SMS (${smsInbox.length})` : 'App'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
 
-        {/* Logs */}
-        <View className="bg-black rounded-2xl p-4">
-          <Text className="text-green-400 font-mono text-xs mb-2">
-            📋 {logViewMode === 'server' ? `Server Logs (${serverLogs.length})` : logViewMode === 'sms' ? `SMS Inbox (${smsInbox.length})` : `App Logs (${logs.length})`}
-          </Text>
-          
-          {logViewMode === 'server' && (
-            serverLogs.length === 0 ? (
-              <Text className="text-gray-500 font-mono text-xs">No server logs yet...</Text>
-            ) : (
-              serverLogs.map((log, i) => (
-                <View key={i} className="mb-2">
-                  <Text className="text-gray-500 font-mono text-[10px]">{new Date(log.time).toLocaleTimeString()}</Text>
-                  <Text className={`font-mono text-xs ${log.type === 'DATA' ? 'text-cyan-400' : log.type === 'ERROR' ? 'text-red-400' : 'text-green-300'}`}>
-                    [{log.type}] {log.message}
-                  </Text>
-                </View>
-              ))
-            )
-          )}
-
-          {logViewMode === 'sms' && (
-            smsInbox.length === 0 ? (
-              <Text className="text-gray-500 font-mono text-xs">No SMS received...</Text>
-            ) : (
-              smsInbox.map((sms, i) => (
-                <View key={i} className="mb-3 border-b border-gray-800 pb-2">
-                  <View className="flex-row justify-between items-start">
-                    <View className="flex-1">
-                      <Text className="text-yellow-400 font-mono text-xs font-bold">{sms.sender}</Text>
-                      <Text className="text-gray-500 font-mono text-[10px]">{new Date(sms.received_at).toLocaleString()}</Text>
-                      <Text className="text-white font-mono text-xs mt-1">{sms.message}</Text>
+          {/* Logs Content */}
+          <View className={`rounded-2xl p-4 min-h-[200px] ${isDark ? 'bg-black' : 'bg-gray-900'}`}>
+            <Text className="text-green-500 font-mono text-xs mb-3">
+              {logViewMode === 'server' ? `// Server Logs (${serverLogs.length})` 
+                : logViewMode === 'sms' ? `// SMS Inbox (${smsInbox.length})`
+                : `// App Logs (${logs.length})`}
+            </Text>
+            
+            {logViewMode === 'server' && (
+              serverLogs.length === 0 
+                ? <Text className="text-gray-600 font-mono text-xs">No logs available...</Text>
+                : serverLogs.slice(0, 20).map((log, i) => (
+                    <View key={i} className="mb-2">
+                      <Text className="text-gray-600 font-mono text-[10px]">
+                        {new Date(log.time).toLocaleTimeString()}
+                      </Text>
+                      <Text className={`font-mono text-xs ${
+                        log.type === 'ERROR' ? 'text-red-400' 
+                        : log.type === 'DATA' ? 'text-cyan-400' 
+                        : 'text-green-400'
+                      }`}>
+                        [{log.type}] {log.message}
+                      </Text>
                     </View>
-                    <TouchableOpacity onPress={() => handleDeleteSms(sms.id)} className="bg-red-900/50 px-2 py-1 rounded ml-2">
-                      <Text className="text-red-400 text-[10px]">DEL</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ))
-            )
-          )}
+                  ))
+            )}
 
-          {logViewMode === 'app' && (
-            logs.length === 0 ? (
-              <Text className="text-gray-500 font-mono text-xs">No logs yet...</Text>
-            ) : (
-              logs.map((log, i) => (
-                <Text key={i} className="text-green-300 font-mono text-xs mb-1">{log}</Text>
-              ))
-            )
-          )}
-        </View>
+            {logViewMode === 'sms' && (
+              smsInbox.length === 0 
+                ? <Text className="text-gray-600 font-mono text-xs">No SMS received...</Text>
+                : smsInbox.map((sms, i) => (
+                    <View key={i} className="mb-3 pb-2 border-b border-gray-800">
+                      <View className="flex-row justify-between">
+                        <View className="flex-1">
+                          <Text className="text-yellow-400 font-mono text-xs font-bold">{sms.sender}</Text>
+                          <Text className="text-gray-600 font-mono text-[10px]">
+                            {new Date(sms.received_at).toLocaleString()}
+                          </Text>
+                          <Text className="text-white font-mono text-xs mt-1">{sms.message}</Text>
+                        </View>
+                        <TouchableOpacity 
+                          onPress={() => handleDeleteSms(sms.id)} 
+                          className="bg-red-900/50 px-2 py-1 rounded h-6"
+                        >
+                          <Text className="text-red-400 text-[10px]">DEL</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))
+            )}
+
+            {logViewMode === 'app' && (
+              logs.length === 0 
+                ? <Text className="text-gray-600 font-mono text-xs">No logs yet...</Text>
+                : logs.slice(0, 30).map((log, i) => (
+                    <Text key={i} className="text-green-400 font-mono text-xs mb-1">{log}</Text>
+                  ))
+            )}
+          </View>
+        </Animated.View>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function StatBox({ label, value }: { label: string; value: any }) {
+// Component: Stat Card
+function StatCard({ label, value, icon, isDark, color }: { label: string; value: any; icon: string; isDark: boolean; color?: string }) {
   return (
-    <View className="w-1/2 mb-2">
-      <Text className="text-gray-400 text-xs">{label}</Text>
-      <Text className="text-black dark:text-white font-bold">{value ?? '-'}</Text>
+    <View className={`w-[48%] p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
+      <View className="flex-row items-center mb-1">
+        <MaterialCommunityIcons name={icon as any} size={14} color={color || (isDark ? '#888' : '#666')} />
+        <Text className={`text-xs ml-1 ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>{label}</Text>
+      </View>
+      <Text className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`} style={color ? { color } : {}}>{value}</Text>
     </View>
   );
 }
 
-function TelemetryItem({ label, value, color, hint }: { label: string; value: any; color: string; hint?: string }) {
+// Component: Action Button
+function ActionButton({ label, icon, color, onPress, isDark }: { label: string; icon: string; color: string; onPress: () => void; isDark: boolean }) {
+  return (
+    <TouchableOpacity 
+      onPress={onPress}
+      className={`flex-row items-center px-4 py-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-white border border-gray-200'}`}
+      style={{ minWidth: '30%' }}
+    >
+      <MaterialCommunityIcons name={icon as any} size={18} color={color} />
+      <Text className={`ml-2 font-medium text-sm ${isDark ? 'text-white' : 'text-gray-900'}`}>{label}</Text>
+    </TouchableOpacity>
+  );
+}
+
+// Component: Telemetry Item
+function TelemetryItem({ label, value, color }: { label: string; value: any; color: string }) {
   return (
     <View className="w-1/2 mb-2">
-      <Text className="text-gray-500 text-[10px]">{label}</Text>
-      <Text className={`font-mono font-bold ${color}`}>{value}</Text>
-      {hint && <Text className="text-gray-600 text-[9px]">{hint}</Text>}
+      <Text className="text-gray-600 text-[10px] font-mono">{label}</Text>
+      <Text className="font-mono font-bold text-sm" style={{ color }}>{value}</Text>
     </View>
   );
 }
 
 function getHdopColor(hdop: number | null): string {
-  if (!hdop || hdop >= 99) return 'text-gray-400';
-  if (hdop < 1) return 'text-green-400';
-  if (hdop < 2) return 'text-green-300';
-  if (hdop < 5) return 'text-yellow-400';
-  return 'text-red-400';
-}
-
-function getHdopHint(hdop: number | null): string {
-  if (!hdop || hdop >= 99) return 'No GPS Fix';
-  if (hdop < 1) return 'Excellent';
-  if (hdop < 2) return 'Very Good';
-  if (hdop < 5) return 'Good';
-  return 'Poor';
+  if (!hdop || hdop >= 99) return '#666';
+  if (hdop < 1) return '#22c55e';
+  if (hdop < 2) return '#84cc16';
+  if (hdop < 5) return '#eab308';
+  return '#ef4444';
 }
