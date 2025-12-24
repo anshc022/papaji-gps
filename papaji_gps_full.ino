@@ -31,6 +31,8 @@ unsigned long lastReconnectAttempt = 0;
 const unsigned long RECONNECT_INTERVAL = 10000; // Reduced to 10s for faster reconnect
 unsigned long lastConnectionSuccess = 0;        // Track last successful connection
 const unsigned long HARD_RESET_INTERVAL = 300000; // 5 Minutes
+unsigned long lastSuccessfulUpload = 0;         // Track last successful data upload
+const unsigned long FORCE_RECONNECT_TIMEOUT = 180000; // 3 Minutes (Force GPRS reset if no data sent)
 
 // --- PINS ---
 #define GSM_RX 16 
@@ -78,7 +80,8 @@ void checkSMS();
 void sendLocationSMS();
 
 // SMS Config
-const char* OWNER_PHONE = "+919939630600";
+const char* OWNER_PHONE_1 = "+919939630600";
+const char* OWNER_PHONE_2 = "+917903636910";
 
 // GPS Quality / Freshness
 const unsigned long GPS_MAX_AGE_MS = 30000;   // Increased to 30s to handle network blocking
@@ -112,6 +115,10 @@ void setup() {
   Serial.println("Initializing modem...");
   esp_task_wdt_reset();
   modem.restart();
+  
+  // DISABLE SLEEP MODE (Keep modem awake for constant tracking)
+  modem.sendAT("+CSCLK=0");
+  modem.waitResponse();
   
   connectToNetwork();
   
@@ -292,7 +299,10 @@ bool sendRawJson(String jsonString) {
   // Read body
   if(client.connected()) {
     String line = client.readStringUntil('\n');
-    if (line.indexOf("ok") != -1) ok = true;
+    if (line.indexOf("ok") != -1) {
+       ok = true;
+       lastSuccessfulUpload = millis(); // Update success timer
+    }
     if (line.indexOf("reset") != -1) {
        Serial.println("Server requested RESET!");
        delay(1000);
@@ -359,6 +369,17 @@ void processOfflineData() {
   SPIFFS.remove("/processing.txt"); 
 }
 
+String getIsoTime() {
+  if (gps.date.isValid() && gps.time.isValid()) {
+    char buf[25];
+    sprintf(buf, "%04d-%02d-%02dT%02d:%02d:%02dZ", 
+      gps.date.year(), gps.date.month(), gps.date.day(),
+      gps.time.hour(), gps.time.minute(), gps.time.second());
+    return String(buf);
+  }
+  return "";
+}
+
 void bufferData(float lat, float lon, float speed, String source, int signal, float hdop, int sats) {
   JsonObject obj = batchArray.createNestedObject();
   obj["device_id"] = DEVICE_ID;
@@ -370,6 +391,9 @@ void bufferData(float lat, float lon, float speed, String source, int signal, fl
   obj["hdop"] = hdop;           // GPS accuracy (lower = better, <2 = excellent)
   obj["satellites"] = sats;     // Number of satellites used
   obj["battery_voltage"] = 4.0; 
+  
+  String ts = getIsoTime();
+  if (ts != "") obj["timestamp"] = ts;
 
   if (batchArray.size() >= BATCH_SIZE) flushBatch();
 }
@@ -488,26 +512,30 @@ void sendLocationSMS() {
     }
   }
   
-  // Send SMS
-  modem.sendAT("+CMGF=1"); // Text mode
-  modem.waitResponse();
+  // Send SMS to both numbers
+  Serial.println("Sending SMS to Owner 1...");
+  sendSMS(OWNER_PHONE_1, message);
   
-  modem.sendAT("+CMGS=\"" + String(OWNER_PHONE) + "\"");
-  if (modem.waitResponse(5000L, ">") == 1) {
-    modem.stream.print(message);
-    modem.stream.write(0x1A); // Ctrl+Z to send
-    
-    if (modem.waitResponse(10000L) == 1) {
-      Serial.println("SMS sent successfully!");
-    } else {
-      Serial.println("SMS send failed!");
-    }
-  }
+  delay(2000); 
+  
+  Serial.println("Sending SMS to Owner 2...");
+  sendSMS(OWNER_PHONE_2, message);
+  
+  Serial.println("Location SMS sent to both numbers.");
 }
 
 // ============ NEW FEATURES ============
 
 void maintainNetwork() {
+  // 1. Check for Data Stall (Zombie Connection)
+  // If we haven't uploaded data successfully in 3 minutes, force a reconnect
+  if (millis() - lastSuccessfulUpload > FORCE_RECONNECT_TIMEOUT) {
+    Serial.println("Data stall detected! Forcing GPRS Reconnect...");
+    modem.gprsDisconnect();
+    lastSuccessfulUpload = millis(); // Reset timer to avoid loop
+    lastConnectionSuccess = 0; // Trigger reconnect logic below
+  }
+
   if (modem.isGprsConnected()) {
     lastConnectionSuccess = millis();
     return;

@@ -104,7 +104,8 @@ app.post('/api/telemetry', async (req, res) => {
     const gsmRows = [];
 
     points.forEach(p => {
-      const createdAt = new Date().toISOString();
+      // Use device timestamp if available, otherwise server time
+      const createdAt = p.timestamp ? p.timestamp : new Date().toISOString();
       
       // Fix: Swap Lat/Lon if swapped (India region check)
       let finalLat = p.latitude;
