@@ -1,188 +1,206 @@
-import Config from '@/constants/Config';
+/**
+ * ============================================
+ * PAPAJI GPS TRACKER - API SERVICE v2.0 (CLEAN)
+ * ============================================
+ * 
+ * Centralized API functions for the mobile app
+ */
 
-const BASE_URL = Config.API_URL;
+// ============================================
+// CONFIGURATION
+// ============================================
+const API_BASE_URL = 'http://3.27.84.253:3000';
+const REQUEST_TIMEOUT = 10000; // 10 seconds
 
+// ============================================
+// TYPES
+// ============================================
+export interface LocationPoint {
+  id?: number;
+  device_id?: string;
+  latitude: number;
+  longitude: number;
+  speed_kmh: number;
+  source: 'gps' | 'gsm';
+  signal?: number;
+  hdop?: number;
+  satellites?: number;
+  battery_voltage?: number;
+  created_at: string;
+}
+
+export interface StopPoint {
+  latitude: number;
+  longitude: number;
+  duration_minutes: number;
+  start_time: string;
+  end_time?: string;
+  ongoing?: boolean;
+}
+
+export interface Stats {
+  distance_km: string;
+  max_speed_kmh: string;
+  avg_speed_kmh: string;
+  active_time_hours: string;
+  data_points: number;
+  stops: StopPoint[];
+  last_update: string | null;
+}
+
+export interface SmsMessage {
+  id: number;
+  device_id: string;
+  sender: string;
+  message: string;
+  received_at: string;
+}
+
+export interface ServerLog {
+  timestamp: string;
+  type: string;
+  message: string;
+  data?: any;
+}
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+/**
+ * Make HTTP request with timeout
+ */
+async function request<T>(
+  endpoint: string, 
+  options: RequestInit = {}
+): Promise<T | null> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+  try {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.error(`API Error: ${response.status} ${response.statusText}`);
+      return null;
+    }
+
+    return await response.json();
+
+  } catch (error) {
+    clearTimeout(timeoutId);
+    
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.error('Request timeout');
+    } else {
+      console.error('Request failed:', error);
+    }
+    
+    return null;
+  }
+}
+
+// ============================================
+// API FUNCTIONS
+// ============================================
 export const api = {
   /**
-   * Get tracking history for a specific date
+   * Get latest GPS location
    */
-  getHistory: async (deviceId: string, date?: string) => {
-    try {
-      const query = date ? `?device_id=${deviceId}&date=${date}` : `?device_id=${deviceId}`;
-      const response = await fetch(`${BASE_URL}/api/history${query}`);
-      if (!response.ok) throw new Error('Network response was not ok');
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (getHistory):', error);
-      throw error;
-    }
+  async getLatest(): Promise<LocationPoint | null> {
+    return request<LocationPoint>('/api/latest');
   },
 
   /**
-   * Get daily statistics (distance, max speed, etc.)
+   * Get location history
+   * @param hours Number of hours to fetch (default: 24)
    */
-  getStats: async (deviceId: string) => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/stats?device_id=${deviceId}`);
-      if (!response.ok) throw new Error('Network response was not ok');
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (getStats):', error);
-      throw error;
-    }
+  async getHistory(hours = 24): Promise<LocationPoint[]> {
+    const data = await request<LocationPoint[]>(`/api/history?hours=${hours}`);
+    return data || [];
   },
 
   /**
-   * Get best latest point (prefers recent GPS over GSM)
+   * Get today's statistics
    */
-  getLatest: async (deviceId: string) => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/latest?device_id=${deviceId}`);
-      if (response.status === 404) return null; // Handle no data gracefully
-      if (!response.ok) throw new Error('Network response was not ok');
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (getLatest):', error);
-      throw error;
-    }
+  async getStats(): Promise<Stats | null> {
+    return request<Stats>('/api/stats');
   },
 
   /**
-   * Run system diagnosis and auto-repair check
+   * Get stop locations
+   * @param hours Number of hours to analyze (default: 24)
    */
-  diagnoseSystem: async (deviceId: string) => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/diagnose`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: deviceId })
-      });
-      if (!response.ok) throw new Error('Network response was not ok');
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (diagnoseSystem):', error);
-      throw error;
-    }
+  async getStops(hours = 24): Promise<StopPoint[]> {
+    const data = await request<StopPoint[]>(`/api/stops?hours=${hours}`);
+    return data || [];
   },
 
   /**
-   * Start Route Learning Mode (48 Hours)
+   * Get SMS inbox
+   * @param limit Maximum messages to fetch (default: 50)
    */
-  startLearning: async (deviceId: string) => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/learn/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: deviceId })
-      });
-      if (!response.ok) throw new Error('Network response was not ok');
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (startLearning):', error);
-      throw error;
-    }
+  async getSmsInbox(limit = 50): Promise<SmsMessage[]> {
+    const data = await request<SmsMessage[]>(`/api/admin/sms?limit=${limit}`);
+    return data || [];
   },
 
   /**
-   * Delete Learned Route Data
+   * Get server logs
+   * @param limit Maximum logs to fetch (default: 100)
    */
-  deleteLearning: async (deviceId: string) => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/learn/delete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: deviceId })
-      });
-      if (!response.ok) throw new Error('Network response was not ok');
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (deleteLearning):', error);
-      throw error;
-    }
+  async getServerLogs(limit = 100): Promise<ServerLog[]> {
+    const data = await request<ServerLog[]>(`/api/admin/logs?limit=${limit}`);
+    return data || [];
   },
 
   /**
-   * Clear all data (Admin)
+   * Clear server logs
    */
-  clearAllData: async (pin: string) => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/admin/clear-data`, {
-        method: 'POST', // Changed to POST to match backend
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin })
-      });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Failed to clear data');
-      }
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (clearAllData):', error);
-      throw error;
-    }
+  async clearServerLogs(): Promise<boolean> {
+    const result = await request('/api/admin/clear-logs', { method: 'POST' });
+    return result !== null;
   },
 
-  resetDevice: async (deviceId: string, pin: string) => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/admin/reset-device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: deviceId, pin })
-      });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Failed to reset device');
-      }
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (resetDevice):', error);
-      throw error;
-    }
+  /**
+   * Reset device
+   * @param type 'hard' = full restart, 'soft' = reconnect only
+   */
+  async resetDevice(type: 'hard' | 'soft'): Promise<boolean> {
+    const result = await request('/api/admin/reset-device', {
+      method: 'POST',
+      body: JSON.stringify({ type }),
+    });
+    return result !== null;
   },
 
-  reconnectDevice: async (deviceId: string, pin: string) => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/admin/reconnect-device`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ device_id: deviceId, pin })
-      });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Failed to reconnect device');
-      }
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (reconnectDevice):', error);
-      throw error;
-    }
+  /**
+   * Clear all GPS/GSM data
+   */
+  async clearAllData(): Promise<boolean> {
+    const result = await request('/api/admin/data', { method: 'DELETE' });
+    return result !== null;
   },
 
-  getSmsInbox: async () => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/admin/sms`);
-      if (!response.ok) {
-        const text = await response.text();
-        console.error(`API Error (getSmsInbox) Status: ${response.status}, Body: ${text}`);
-        throw new Error(`Failed to fetch SMS: ${response.status}`);
-      }
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (getSmsInbox):', error);
-      throw error;
-    }
+  /**
+   * Check server health
+   */
+  async healthCheck(): Promise<boolean> {
+    const result = await request<{ status: string }>('/api/health');
+    return result?.status === 'healthy';
   },
-
-  deleteSms: async (id: number) => {
-    try {
-      const response = await fetch(`${BASE_URL}/api/admin/sms/${id}`, {
-        method: 'DELETE'
-      });
-      if (!response.ok) throw new Error('Failed to delete SMS');
-      return await response.json();
-    } catch (error) {
-      console.error('API Error (deleteSms):', error);
-      throw error;
-    }
-  }
 };
+
+// ============================================
+// EXPORT
+// ============================================
+export default api;

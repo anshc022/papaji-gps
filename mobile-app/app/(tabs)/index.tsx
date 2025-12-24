@@ -1,571 +1,497 @@
-import MapView, { Marker, Polyline, Callout, Circle } from '@/components/MapLib';
-import { useMapType } from '@/context/MapContext';
-import { useTheme } from '@/context/ThemeContext';
-import { MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useRef, useState, useEffect } from 'react';
-import { Image, Text, TouchableOpacity, View, ToastAndroid, Platform } from 'react-native';
-import Animated, { FadeIn, FadeInDown, FadeInUp } from 'react-native-reanimated';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { api } from '@/services/api';
+/**
+ * ============================================
+ * PAPAJI GPS TRACKER - DASHBOARD v2.0 (CLEAN)
+ * ============================================
+ * 
+ * Main Map Screen with Live Tracking
+ */
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, Switch, ActivityIndicator, Alert, Platform } from 'react-native';
+import MapView, { Polyline, Circle, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import * as Speech from 'expo-speech';
-import * as Location from 'expo-location';
 
+import { ThemedView } from '@/components/themed-view';
+import { ThemedText } from '@/components/themed-text';
+import { TractorStatusCard } from '@/components/TractorStatusCard';
+import { useMapContext } from '@/context/MapContext';
+import { useThemeContext } from '@/context/ThemeContext';
+import { api } from '@/services/api';
+
+// ============================================
+// TYPES
+// ============================================
+interface LocationPoint {
+  latitude: number;
+  longitude: number;
+  source: 'gps' | 'gsm';
+  speed_kmh?: number;
+  created_at?: string;
+}
+
+interface StopPoint {
+  latitude: number;
+  longitude: number;
+  duration_minutes: number;
+  start_time: string;
+  end_time?: string;
+  ongoing?: boolean;
+}
+
+interface Stats {
+  distance_km: string;
+  max_speed_kmh: string;
+  avg_speed_kmh: string;
+  active_time_hours: string;
+  data_points: number;
+  stops: StopPoint[];
+  last_update: string;
+}
+
+type ViewMode = 'gps' | 'gsm' | 'both';
+
+// ============================================
+// CONSTANTS
+// ============================================
+const REFRESH_INTERVAL = 5000; // 5 seconds
+const AUTO_CENTER_ZOOM = 0.01;
+
+// Default location (India)
+const DEFAULT_REGION = {
+  latitude: 26.4499,
+  longitude: 80.3319,
+  latitudeDelta: 0.01,
+  longitudeDelta: 0.01,
+};
+
+// ============================================
+// COMPONENT
+// ============================================
 export default function DashboardScreen() {
-  const { themePreference, setThemePreference, activeTheme } = useTheme();
-  const { mapType, setMapType } = useMapType();
-  const isDark = activeTheme === 'dark';
+  const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
-  const hasAutoSwitchedRef = useRef(false);
-  
-  const [stats, setStats] = useState({
-    max_speed: 0,
-    total_distance_km: 0,
-    total_duration_minutes: 0,
-    status: 'Offline',
-    source: 'gps',
-    signal: 0
-  });
+  const { mapTheme } = useMapContext();
+  const { isDarkMode } = useThemeContext();
 
-  useEffect(() => {
-    loadStats();
-    loadMapData();
+  // State
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [location, setLocation] = useState<LocationPoint | null>(null);
+  const [gpsRoute, setGpsRoute] = useState<LocationPoint[]>([]);
+  const [gsmPoints, setGsmPoints] = useState<LocationPoint[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [isOnline, setIsOnline] = useState(false);
 
-    // Auto-refresh every 5 seconds for real-time tracking
-    const interval = setInterval(() => {
-      loadStats();
-      loadMapData();
-    }, 5000);
+  // Settings
+  const [viewMode, setViewMode] = useState<ViewMode>('gps');
+  const [autoCenter, setAutoCenter] = useState(true);
+  const [showVoice, setShowVoice] = useState(false);
 
-    return () => clearInterval(interval);
+  // ============================================
+  // DATA FETCHING
+  // ============================================
+  const fetchData = useCallback(async () => {
+    try {
+      // Fetch all data in parallel
+      const [statsData, latestData, historyData] = await Promise.all([
+        api.getStats(),
+        api.getLatest(),
+        api.getHistory(24)
+      ]);
+
+      // Update stats
+      if (statsData) {
+        setStats(statsData);
+      }
+
+      // Update current location
+      if (latestData) {
+        setLocation({
+          latitude: latestData.latitude,
+          longitude: latestData.longitude,
+          source: latestData.source || 'gps',
+          speed_kmh: latestData.speed_kmh,
+          created_at: latestData.created_at
+        });
+
+        // Check if online (updated in last 5 minutes)
+        const lastTime = new Date(latestData.created_at).getTime();
+        setIsOnline(Date.now() - lastTime < 5 * 60 * 1000);
+      }
+
+      // Update route history
+      if (historyData) {
+        const gps = historyData
+          .filter((p: LocationPoint) => p.source === 'gps')
+          .map((p: any) => ({
+            latitude: parseFloat(p.latitude),
+            longitude: parseFloat(p.longitude),
+            source: 'gps' as const,
+            speed_kmh: p.speed_kmh,
+            created_at: p.created_at
+          }));
+        
+        const gsm = historyData
+          .filter((p: LocationPoint) => p.source === 'gsm')
+          .map((p: any) => ({
+            latitude: parseFloat(p.latitude),
+            longitude: parseFloat(p.longitude),
+            source: 'gsm' as const,
+            created_at: p.created_at
+          }));
+
+        setGpsRoute(gps);
+        setGsmPoints(gsm);
+      }
+
+      setLastUpdate(new Date());
+      setIsLoading(false);
+
+    } catch (error) {
+      console.error('Fetch error:', error);
+      setIsLoading(false);
+    }
   }, []);
 
-  const loadStats = async () => {
-    try {
-      const data = await api.getStats('papaji_tractor_01');
-      setStats(data);
-    } catch (e) {
-      console.log('Failed to load stats');
-    }
-  };
-
-  const toggleTheme = () => {
-    if (themePreference === 'system') setThemePreference('light');
-    else if (themePreference === 'light') setThemePreference('dark');
-    else setThemePreference('system');
-  };
-
-  const getThemeIcon = () => {
-    if (themePreference === 'system') return 'theme-light-dark';
-    if (themePreference === 'light') return 'weather-sunny';
-    return 'weather-night';
-  };
-
-  const toggleViewMode = () => {
-    setViewMode(prev => prev === 'gps' ? 'gsm' : 'gps');
-  };
-
-  const toggleMapType = () => {
-    if (mapType === 'standard') setMapType('satellite');
-    else if (mapType === 'satellite') setMapType('hybrid');
-    else if (mapType === 'hybrid') setMapType('terrain');
-    else setMapType('standard');
-  };
-
-  const getMapTypeIcon = () => {
-    if (mapType === 'standard') return 'map-outline';
-    if (mapType === 'satellite') return 'satellite-variant';
-    if (mapType === 'hybrid') return 'layers-triple';
-    return 'terrain';
-  };
-
-  const [region] = useState({
-    latitude: 30.7333,
-    longitude: 76.7794,
-    latitudeDelta: 0.01,
-    longitudeDelta: 0.01,
-  });
-
-  const [tractorLocation, setTractorLocation] = useState({
-    latitude: 30.7333,
-    longitude: 76.7794,
-  });
-
-  const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
-  const [gsmPoints, setGsmPoints] = useState<any[]>([]);
-  const [stops, setStops] = useState<any[]>([]);
-  const [hasCentered, setHasCentered] = useState(false);
-  const [viewMode, setViewMode] = useState<'gps' | 'gsm'>('gps');
-
-  // Auto-switch view mode based on source
+  // ============================================
+  // EFFECTS
+  // ============================================
   useEffect(() => {
-    if (stats.source === 'gps' && viewMode !== 'gps') {
-      setViewMode('gps');
-    } else if (stats.source === 'gsm' && viewMode !== 'gsm') {
-      setViewMode('gsm');
+    fetchData();
+    const interval = setInterval(fetchData, REFRESH_INTERVAL);
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
+  // Auto-center map on new location
+  useEffect(() => {
+    if (autoCenter && location && mapRef.current) {
+      mapRef.current.animateToRegion({
+        latitude: location.latitude,
+        longitude: location.longitude,
+        latitudeDelta: AUTO_CENTER_ZOOM,
+        longitudeDelta: AUTO_CENTER_ZOOM,
+      }, 500);
     }
-  }, [stats.source]);
+  }, [location, autoCenter]);
 
-  const loadMapData = async () => {
-    try {
-      const history = await api.getHistory('papaji_tractor_01');
-      if (history && history.length > 0) {
-        // Separate GPS and GSM points
-        const gpsRoute = history.filter((p: any) => p.source !== 'gsm').map((p: any) => ({
-          latitude: p.latitude,
-          longitude: p.longitude
-        }));
-        const gsmRoute = history.filter((p: any) => p.source === 'gsm').map((p: any) => ({
-          latitude: p.latitude,
-          longitude: p.longitude
-        }));
-        
-        setRouteCoordinates(gpsRoute);
-        setGsmPoints(gsmRoute);
+  // ============================================
+  // HANDLERS
+  // ============================================
+  const speakLocation = () => {
+    if (!location || !stats) return;
 
-        // Auto-switch to GSM if no GPS data (Only once)
-        if (!hasAutoSwitchedRef.current && gpsRoute.length === 0 && gsmRoute.length > 0) {
-            setViewMode('gsm');
-            hasAutoSwitchedRef.current = true;
-        }
-        
-        // Calculate Stops (Gaps > 5 mins)
-        let rawStops = [];
-        for (let i = 0; i < history.length - 1; i++) {
-            const p1 = history[i];
-            const p2 = history[i+1];
-            
-            const t1 = new Date(p1.created_at).getTime();
-            const t2 = new Date(p2.created_at).getTime();
-            const diffMins = (t2 - t1) / 1000 / 60;
+    const message = `
+      ट्रैक्टर ${isOnline ? 'चालू है' : 'बंद है'}।
+      रफ़्तार ${Math.round(location.speed_kmh || 0)} किलोमीटर प्रति घंटा।
+      आज ${stats.distance_km} किलोमीटर चला।
+      ${stats.stops?.length || 0} बार रुका।
+    `.trim();
 
-            if (diffMins >= 5) {
-                rawStops.push({
-                    latitude: p1.latitude,
-                    longitude: p1.longitude,
-                    duration: Math.round(diffMins),
-                    startTime: t1,
-                    timeLabel: new Date(p1.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})
-                });
-            }
-        }
-
-        // Merge consecutive stops at same location (< 50m)
-        const mergedStops = [];
-        if (rawStops.length > 0) {
-            let current = rawStops[0];
-            
-            for (let i = 1; i < rawStops.length; i++) {
-                const next = rawStops[i];
-                const dLat = Math.abs(current.latitude - next.latitude);
-                const dLon = Math.abs(current.longitude - next.longitude);
-                
-                // Approx 50m ~ 0.0005 degrees
-                if (dLat < 0.0005 && dLon < 0.0005) {
-                    // Merge
-                    current.duration += next.duration;
-                } else {
-                    // Push and move to next
-                    mergedStops.push(current);
-                    current = next;
-                }
-            }
-            mergedStops.push(current);
-        }
-
-        setStops(mergedStops.map(s => ({
-            latitude: s.latitude,
-            longitude: s.longitude,
-            duration: s.duration,
-            time: s.timeLabel
-        })));
-
-        // Use last point from history (could be GPS or GSM)
-        const lastHistoryPoint = history[history.length - 1];
-        const lastPoint = { latitude: lastHistoryPoint.latitude, longitude: lastHistoryPoint.longitude };
-        setTractorLocation(lastPoint);
-
-        // Auto-center on first load
-        if (!hasCentered) {
-           mapRef.current?.animateToRegion({
-             latitude: lastPoint.latitude,
-             longitude: lastPoint.longitude,
-             latitudeDelta: 0.005,
-             longitudeDelta: 0.005,
-           }, 1000);
-           setHasCentered(true);
-        }
-      }
-    } catch (e) {
-      console.log('Error loading map data');
-    }
-  };
-
-  const getCurrentLocation = () => {
-    if (viewMode === 'gps' && routeCoordinates.length > 0) return routeCoordinates[routeCoordinates.length - 1];
-    if (viewMode === 'gsm' && gsmPoints.length > 0) return gsmPoints[gsmPoints.length - 1];
-    return tractorLocation;
+    Speech.speak(message, {
+      language: 'hi-IN',
+      pitch: 1.0,
+      rate: 0.9,
+    });
   };
 
   const centerOnTractor = () => {
-    const loc = getCurrentLocation();
-    mapRef.current?.animateToRegion({
-      ...loc,
-      latitudeDelta: 0.005,
-      longitudeDelta: 0.005,
-    }, 1000);
-  };
-
-  const handleRefresh = async () => {
-    await Promise.all([loadStats(), loadMapData()]);
-  };
-
-  const speakLocation = async () => {
-    if (Platform.OS === 'android') {
-        ToastAndroid.show("पता ढूंढा जा रहा है...", ToastAndroid.SHORT);
-    }
-
-    try {
-      const { latitude, longitude } = getCurrentLocation();
-      let addressObj = null;
-
-      // 1. Try Native Geocoder (Google Play Services)
-      try {
-          const [address] = await Location.reverseGeocodeAsync({ latitude, longitude });
-          if (address) addressObj = address;
-      } catch (e) {
-          console.log("Native Geocoder failed, trying fallback...");
-      }
-
-      // 2. Fallback to OpenStreetMap (Nominatim) - No Key Required
-      if (!addressObj) {
-          try {
-            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&accept-language=hi`, {
-                headers: { 'User-Agent': 'PapajiGPS/1.0' }
-            });
-            const data = await response.json();
-            if (data && data.address) {
-                addressObj = {
-                    street: data.address.road || data.address.pedestrian || data.address.path,
-                    district: data.address.suburb || data.address.neighbourhood || data.address.county,
-                    city: data.address.city || data.address.town || data.address.village,
-                    region: data.address.state,
-                    isoCountryCode: 'IN'
-                };
-            }
-          } catch (err) {
-              console.log("Nominatim fallback failed");
-          }
-      }
-      
-      if (addressObj) {
-        const parts = [
-            addressObj.street, 
-            addressObj.district, 
-            addressObj.city, 
-            addressObj.region
-        ].filter(Boolean);
-        
-        const text = parts.length > 0 
-            ? `ट्रैक्टर अभी ${parts.join(', ')} में है`
-            : "पता नहीं मिला, लेकिन लोकेशन उपलब्ध है";
-            
-        Speech.stop(); // Stop previous speech
-        Speech.speak(text, { language: 'hi-IN' });
-      } else {
-        Speech.speak("पता निर्धारित नहीं किया जा सका", { language: 'hi-IN' });
-        if (Platform.OS === 'android') ToastAndroid.show("Address not found", ToastAndroid.SHORT);
-      }
-    } catch (error: any) {
-      console.log(error);
-      const errText = error?.message || "लोकेशन विवरण खोजने में त्रुटि हुई";
-      Speech.speak("त्रुटि हुई", { language: 'hi-IN' });
-      if (Platform.OS === 'android') {
-          ToastAndroid.show(errText, ToastAndroid.LONG);
-      }
+    if (location && mapRef.current) {
+      mapRef.current.animateToRegion({
+        latitude: location.latitude,
+        longitude: location.longitude,
+        latitudeDelta: AUTO_CENTER_ZOOM,
+        longitudeDelta: AUTO_CENTER_ZOOM,
+      }, 500);
     }
   };
 
-  const darkMapStyle = [
-    {
-      "elementType": "geometry",
-      "stylers": [{ "color": "#212121" }]
-    },
-    {
-      "elementType": "labels.icon",
-      "stylers": [{ "visibility": "off" }]
-    },
-    {
-      "elementType": "labels.text.fill",
-      "stylers": [{ "color": "#757575" }]
-    },
-    {
-      "elementType": "labels.text.stroke",
-      "stylers": [{ "color": "#212121" }]
-    },
-    {
-      "featureType": "administrative",
-      "elementType": "geometry",
-      "stylers": [{ "color": "#757575" }]
-    },
-    {
-      "featureType": "poi",
-      "elementType": "labels.text.fill",
-      "stylers": [{ "color": "#757575" }]
-    },
-    {
-      "featureType": "road",
-      "elementType": "geometry.fill",
-      "stylers": [{ "color": "#2c2c2c" }]
-    },
-    {
-      "featureType": "road",
-      "elementType": "labels.text.fill",
-      "stylers": [{ "color": "#8a8a8a" }]
-    },
-    {
-      "featureType": "water",
-      "elementType": "geometry",
-      "stylers": [{ "color": "#000000" }]
-    }
-  ];
+  const cycleViewMode = () => {
+    const modes: ViewMode[] = ['gps', 'gsm', 'both'];
+    const currentIndex = modes.indexOf(viewMode);
+    setViewMode(modes[(currentIndex + 1) % modes.length]);
+  };
+
+  // ============================================
+  // RENDER HELPERS
+  // ============================================
+  const formatTime = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return date.toLocaleTimeString('en-IN', { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: true 
+    });
+  };
+
+  const getStatusColor = () => isOnline ? '#22c55e' : '#ef4444';
+
+  // ============================================
+  // RENDER
+  // ============================================
+  if (isLoading) {
+    return (
+      <ThemedView className="flex-1 items-center justify-center">
+        <ActivityIndicator size="large" color="#f59e0b" />
+        <ThemedText className="mt-4">Loading tracker...</ThemedText>
+      </ThemedView>
+    );
+  }
 
   return (
-    <View className="flex-1 bg-gray-100 dark:bg-dark-bg">
-      {/* Full Screen Map */}
+    <ThemedView className="flex-1">
+      {/* Map */}
       <MapView
         ref={mapRef}
         style={{ flex: 1 }}
-        initialRegion={region}
-        customMapStyle={isDark ? darkMapStyle : []}
-        mapType={mapType}
+        provider={PROVIDER_GOOGLE}
+        initialRegion={location ? {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          latitudeDelta: 0.01,
+          longitudeDelta: 0.01,
+        } : DEFAULT_REGION}
+        customMapStyle={mapTheme}
+        showsUserLocation={false}
+        showsCompass={false}
       >
-        {/* GPS Route - Orange */}
-        {viewMode === 'gps' && (
+        {/* GPS Route */}
+        {(viewMode === 'gps' || viewMode === 'both') && gpsRoute.length > 1 && (
           <Polyline
-            coordinates={routeCoordinates}
-            strokeColor="#FF5500"
+            coordinates={gpsRoute}
+            strokeColor="#22c55e"
             strokeWidth={4}
           />
         )}
-        
-        {/* GSM Route - Purple Circles (Approximate Location) */}
-        {gsmPoints.map((point, index) => {
-           // Workaround: On Android, Circles sometimes don't unmount properly.
-           // We render them with 0 radius/transparent when hidden instead of unmounting.
-           const isVisible = viewMode === 'gsm';
-           if (!isVisible && Platform.OS !== 'android') return null; // Optimization for iOS
 
-           return (
-            <Circle
-              key={`gsm-circle-${index}`}
-              center={{ latitude: point.latitude, longitude: point.longitude }}
-              radius={isVisible ? 50 : 0} 
-              strokeColor={isVisible ? "rgba(147, 51, 234, 0.8)" : "transparent"}
-              fillColor={isVisible ? "rgba(147, 51, 234, 0.4)" : "transparent"}
-              zIndex={isVisible ? 1 : -1}
-            />
-           );
-        })}
-        
-        {stops.map((stop, index) => (
-          <Marker 
+        {/* GSM Points */}
+        {(viewMode === 'gsm' || viewMode === 'both') && gsmPoints.map((point, index) => (
+          <Circle
+            key={`gsm-${index}`}
+            center={point}
+            radius={200}
+            fillColor="rgba(239, 68, 68, 0.2)"
+            strokeColor="rgba(239, 68, 68, 0.6)"
+            strokeWidth={1}
+          />
+        ))}
+
+        {/* Stop Markers */}
+        {stats?.stops?.map((stop, index) => (
+          <Marker
             key={`stop-${index}`}
-            coordinate={stop}
+            coordinate={{ latitude: stop.latitude, longitude: stop.longitude }}
+            anchor={{ x: 0.5, y: 0.5 }}
           >
-            <View className="bg-red-600 px-2 py-1 rounded-md border border-white shadow-sm">
-               <Text className="text-white text-[10px] font-bold">{stop.duration}m</Text>
+            <View className="items-center">
+              <View 
+                className="w-8 h-8 rounded-full items-center justify-center"
+                style={{ backgroundColor: stop.ongoing ? '#f59e0b' : '#6b7280' }}
+              >
+                <Text className="text-white text-xs font-bold">
+                  {stop.duration_minutes}m
+                </Text>
+              </View>
             </View>
-            <Callout tooltip>
-                <View className="bg-white p-2 rounded-lg shadow-lg border border-gray-200 w-32 items-center">
-                    <Text className="font-bold text-black mb-1">Stopped</Text>
-                    <Text className="text-black">{stop.duration} mins</Text>
-                    <Text className="text-xs text-gray-500 mt-1">At {stop.time}</Text>
-                </View>
-            </Callout>
           </Marker>
         ))}
 
-        <Marker 
-          coordinate={getCurrentLocation()}
-          anchor={{ x: 0.5, y: 0.5 }}
-        >
-          {viewMode === 'gps' ? (
-            <View className="bg-primary p-2 rounded-full border-4 border-white/20 shadow-lg">
-              <MaterialCommunityIcons name="navigation" size={20} color="white" style={{ transform: [{ rotate: '45deg' }] }} />
+        {/* Current Location Marker */}
+        {location && (
+          <Marker
+            coordinate={location}
+            anchor={{ x: 0.5, y: 0.5 }}
+          >
+            <View className="items-center">
+              {/* Pulse animation */}
+              {isOnline && (
+                <View 
+                  className="absolute w-16 h-16 rounded-full opacity-30"
+                  style={{ backgroundColor: getStatusColor() }}
+                />
+              )}
+              {/* Tractor icon */}
+              <View 
+                className="w-10 h-10 rounded-full items-center justify-center border-2 border-white"
+                style={{ backgroundColor: getStatusColor() }}
+              >
+                <Text className="text-xl">🚜</Text>
+              </View>
             </View>
-          ) : (
-            <View className="items-center justify-center" style={{ width: 40, height: 40 }}>
-               <View className="w-full h-full bg-purple-500/30 rounded-full border border-purple-500" />
-               <View className="absolute w-3 h-3 bg-purple-700 rounded-full border-2 border-white" />
-            </View>
-          )}
-        </Marker>
+          </Marker>
+        )}
       </MapView>
 
-      {/* Header Overlay */}
-      <SafeAreaView className="absolute top-0 left-0 right-0 z-10 px-4" edges={['top']} pointerEvents="box-none">
-        <View className="flex-row justify-between items-start mt-4" pointerEvents="box-none">
-          
-          {/* Left Column: Title + Legend */}
-          <View className="flex-1 mr-4">
-            {/* Title */}
-            <Animated.View entering={FadeInUp.delay(300).springify()} className="bg-white/80 dark:bg-dark-card/80 p-4 rounded-2xl backdrop-blur-md shadow-sm flex-row items-center gap-3">
-              <Image source={require('@/assets/images/icon.png')} className="w-12 h-12 rounded-xl" />
-              <View className="flex-1">
-                <Text className="text-black dark:text-white text-xl font-bold">Papaji Tractor</Text>
-                <View className="flex-row items-center gap-1 flex-wrap">
-                  <Text className="text-gray-500 dark:text-dark-subtext text-xs">Mahindra 575 DI</Text>
-                  
-                  {/* Status Badge */}
-                  <View className={`px-1.5 py-0.5 rounded-md ${stats.status === 'Online' ? 'bg-green-100' : 'bg-red-100'}`}>
-                    <Text className={`text-[10px] font-bold ${stats.status === 'Online' ? 'text-green-700' : 'text-red-700'}`}>
-                      {stats.status}
-                    </Text>
-                  </View>
+      {/* Top Status Bar */}
+      <View 
+        className="absolute left-4 right-4 flex-row items-center justify-between"
+        style={{ top: insets.top + 8 }}
+      >
+        {/* Status Chip */}
+        <View 
+          className="px-3 py-2 rounded-full flex-row items-center"
+          style={{ 
+            backgroundColor: isDarkMode ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.9)',
+          }}
+        >
+          <View 
+            className="w-3 h-3 rounded-full mr-2"
+            style={{ backgroundColor: getStatusColor() }}
+          />
+          <ThemedText className="font-medium">
+            {isOnline ? 'Online' : 'Offline'}
+          </ThemedText>
+          {location?.speed_kmh !== undefined && location.speed_kmh > 0 && (
+            <ThemedText className="ml-2 text-gray-500">
+              {Math.round(location.speed_kmh)} km/h
+            </ThemedText>
+          )}
+        </View>
 
-                  {/* Source Badge (Only if Online) */}
-                  {stats.status === 'Online' && (
-                    <View className={`px-1.5 py-0.5 rounded-md ${stats.source === 'gps' ? 'bg-blue-100' : 'bg-yellow-100'}`}>
-                        <Text className={`text-[10px] font-bold ${stats.source === 'gps' ? 'text-blue-700' : 'text-yellow-700'}`}>
-                          {stats.source === 'gps' ? 'GPS' : 'GSM'}
-                        </Text>
-                    </View>
-                  )}
+        {/* View Mode Toggle */}
+        <TouchableOpacity
+          onPress={cycleViewMode}
+          className="px-3 py-2 rounded-full"
+          style={{ 
+            backgroundColor: isDarkMode ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.9)',
+          }}
+        >
+          <ThemedText className="font-medium uppercase">
+            {viewMode}
+          </ThemedText>
+        </TouchableOpacity>
+      </View>
 
-                  {/* Signal Strength (Always Show if available) */}
-                  {stats.signal > 0 && (
-                    <View className="flex-row items-center ml-1 bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded-md">
-                        <MaterialCommunityIcons 
-                          name={stats.signal > 20 ? "signal-cellular-3" : stats.signal > 10 ? "signal-cellular-2" : "signal-cellular-1"} 
-                          size={12} 
-                          color={stats.signal > 15 ? "#16a34a" : "#ca8a04"} 
-                        />
-                        <Text className="text-[10px] font-bold text-gray-600 dark:text-gray-300 ml-1">{stats.signal}</Text>
-                    </View>
-                  )}
-                </View>
-              </View>
-            </Animated.View>
+      {/* Map Controls */}
+      <View 
+        className="absolute right-4 gap-2"
+        style={{ top: insets.top + 60 }}
+      >
+        {/* Center Button */}
+        <TouchableOpacity
+          onPress={centerOnTractor}
+          className="w-10 h-10 rounded-full items-center justify-center"
+          style={{ 
+            backgroundColor: isDarkMode ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.9)',
+          }}
+        >
+          <Ionicons name="locate" size={20} color={isDarkMode ? '#fff' : '#000'} />
+        </TouchableOpacity>
 
-            {/* Map Legend - Moved here to stay on left */}
-            <Animated.View entering={FadeIn.delay(500)} className="self-start bg-white/90 dark:bg-dark-card/90 px-3 py-2 rounded-xl mt-2">
-              <View className="flex-row items-center gap-3">
-                {viewMode === 'gps' && (
-                  <View className="flex-row items-center gap-1">
-                    <View className="w-4 h-1 bg-[#FF5500] rounded" />
-                    <Text className="text-[10px] text-black dark:text-white">GPS Route</Text>
-                  </View>
-                )}
-                {viewMode === 'gsm' && (
-                  <View className="flex-row items-center gap-1">
-                    <View className="w-4 h-4 rounded-full bg-purple-600/20 border border-purple-600" />
-                    <Text className="text-[10px] text-black dark:text-white">GSM Approx</Text>
-                  </View>
-                )}
-              </View>
-            </Animated.View>
+        {/* Voice Button */}
+        <TouchableOpacity
+          onPress={speakLocation}
+          className="w-10 h-10 rounded-full items-center justify-center"
+          style={{ 
+            backgroundColor: isDarkMode ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.9)',
+          }}
+        >
+          <Ionicons name="volume-high" size={20} color={isDarkMode ? '#fff' : '#000'} />
+        </TouchableOpacity>
+
+        {/* Auto-center Toggle */}
+        <TouchableOpacity
+          onPress={() => setAutoCenter(!autoCenter)}
+          className="w-10 h-10 rounded-full items-center justify-center"
+          style={{ 
+            backgroundColor: autoCenter 
+              ? '#f59e0b' 
+              : isDarkMode ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.9)',
+          }}
+        >
+          <Ionicons 
+            name={autoCenter ? 'navigate' : 'navigate-outline'} 
+            size={20} 
+            color={autoCenter ? '#fff' : isDarkMode ? '#fff' : '#000'} 
+          />
+        </TouchableOpacity>
+      </View>
+
+      {/* Bottom Stats Card */}
+      <View 
+        className="absolute left-4 right-4"
+        style={{ bottom: insets.bottom + 20 }}
+      >
+        <View 
+          className="rounded-2xl p-4"
+          style={{ 
+            backgroundColor: isDarkMode ? 'rgba(0,0,0,0.85)' : 'rgba(255,255,255,0.95)',
+          }}
+        >
+          {/* Stats Grid */}
+          <View className="flex-row justify-between mb-3">
+            <StatItem 
+              icon="speedometer" 
+              value={`${stats?.max_speed_kmh || '0'}`} 
+              label="Max Speed"
+              unit="km/h"
+            />
+            <StatItem 
+              icon="car" 
+              value={`${stats?.distance_km || '0'}`} 
+              label="Distance"
+              unit="km"
+            />
+            <StatItem 
+              icon="time" 
+              value={`${stats?.active_time_hours || '0'}`} 
+              label="Active"
+              unit="hrs"
+            />
+            <StatItem 
+              icon="pause" 
+              value={`${stats?.stops?.length || 0}`} 
+              label="Stops"
+              unit=""
+            />
           </View>
 
-          {/* Floating Action Buttons */}
-          <Animated.View entering={FadeInUp.delay(400).springify()} className="gap-3">
-            <TouchableOpacity 
-              onPress={speakLocation} 
-              className="bg-white dark:bg-dark-card p-3 rounded-full shadow-lg items-center justify-center"
-              style={{ width: 50, height: 50 }}
-            >
-              <MaterialCommunityIcons name="volume-high" size={24} color={isDark ? "white" : "black"} />
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              onPress={handleRefresh} 
-              className="bg-white dark:bg-dark-card p-3 rounded-full shadow-lg items-center justify-center"
-              style={{ width: 50, height: 50 }}
-            >
-              <MaterialCommunityIcons name="refresh" size={24} color={isDark ? "white" : "black"} />
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              onPress={toggleMapType} 
-              className="bg-white dark:bg-dark-card p-3 rounded-full shadow-lg items-center justify-center"
-              style={{ width: 50, height: 50 }}
-            >
-              <MaterialCommunityIcons name={getMapTypeIcon()} size={24} color={isDark ? "white" : "black"} />
-            </TouchableOpacity>
-            
-            <TouchableOpacity 
-              onPress={toggleTheme} 
-              className="bg-white dark:bg-dark-card p-3 rounded-full shadow-lg items-center justify-center"
-              style={{ width: 50, height: 50 }}
-            >
-              <MaterialCommunityIcons name={getThemeIcon()} size={24} color={isDark ? "white" : "black"} />
-            </TouchableOpacity>
-          </Animated.View>
-          
+          {/* Last Update */}
+          <View className="flex-row items-center justify-center pt-2 border-t border-gray-200 dark:border-gray-700">
+            <Ionicons 
+              name="sync" 
+              size={14} 
+              color={isDarkMode ? '#9ca3af' : '#6b7280'} 
+            />
+            <ThemedText className="ml-2 text-sm text-gray-500">
+              Last update: {lastUpdate ? formatTime(lastUpdate.toISOString()) : '--:--'}
+            </ThemedText>
+          </View>
         </View>
-      </SafeAreaView>
+      </View>
+    </ThemedView>
+  );
+}
 
-      {/* Bottom Stats Cards */}
-      <View className="absolute bottom-32 left-0 right-0 px-4" pointerEvents="box-none">
-        
-        {/* Controls Row: View Toggle (Left) & Locate (Right) */}
-        <Animated.View entering={FadeInDown.delay(600).springify()} className="flex-row justify-between items-end mb-4">
-            <TouchableOpacity 
-              onPress={toggleViewMode} 
-              className={`p-3 rounded-full shadow-lg items-center justify-center ${viewMode === 'gps' ? 'bg-white dark:bg-dark-card' : 'bg-purple-100 dark:bg-purple-900'}`}
-              style={{ width: 50, height: 50 }}
-            >
-              <MaterialCommunityIcons name={viewMode === 'gps' ? "satellite-uplink" : "access-point-network"} size={24} color={viewMode === 'gps' ? (isDark ? "black" : "white") : "#9333EA"} />
-            </TouchableOpacity>
+// ============================================
+// SUB-COMPONENTS
+// ============================================
+interface StatItemProps {
+  icon: keyof typeof Ionicons.glyphMap;
+  value: string;
+  label: string;
+  unit: string;
+}
 
-            <TouchableOpacity 
-              onPress={centerOnTractor} 
-              className="bg-primary p-3 rounded-full shadow-lg items-center justify-center"
-              style={{ width: 50, height: 50 }}
-            >
-              <MaterialCommunityIcons name="crosshairs-gps" size={24} color="white" />
-            </TouchableOpacity>
-        </Animated.View>
-
-        <View className="flex-row gap-3">
-          {/* Usage Time Card */}
-          <Animated.View entering={FadeInDown.delay(400).springify()} className="flex-1 h-32 bg-[#FF5500] rounded-3xl p-3 justify-between shadow-lg shadow-orange-500/30">
-             <View className="flex-row justify-between items-start">
-               <Text className="text-white font-medium text-xs">Usage</Text>
-               <View className="bg-black/20 p-1.5 rounded-full">
-                 <MaterialCommunityIcons name="clock-outline" size={14} color="white" />
-               </View>
-             </View>
-             <Text className="text-white text-xl font-bold" numberOfLines={1} adjustsFontSizeToFit>
-               {Math.floor(stats.total_duration_minutes / 60)}h {stats.total_duration_minutes % 60}m
-             </Text>
-          </Animated.View>
-
-          {/* Distance Card */}
-          <Animated.View entering={FadeInDown.delay(500).springify()} className="flex-1 h-32 bg-white dark:bg-dark-card rounded-3xl p-3 justify-between shadow-lg">
-             <View className="flex-row justify-between items-start">
-               <Text className="text-black dark:text-white font-medium text-xs">Distance</Text>
-               <View className="bg-black dark:bg-white/20 p-1.5 rounded-full">
-                 <MaterialCommunityIcons name="map-marker-distance" size={14} color="white" />
-               </View>
-             </View>
-             <Text className="text-black dark:text-white text-xl font-bold" numberOfLines={1} adjustsFontSizeToFit>
-               {stats.total_distance_km}km
-             </Text>
-          </Animated.View>
-
-          {/* Speed Card */}
-          <Animated.View entering={FadeInDown.delay(600).springify()} className="flex-1 h-32 bg-white dark:bg-dark-card rounded-3xl p-3 justify-between shadow-lg">
-             <View className="flex-row justify-between items-start">
-               <Text className="text-black dark:text-white font-medium text-xs">Max Speed</Text>
-               <View className="bg-black dark:bg-white/20 p-1.5 rounded-full">
-                 <MaterialCommunityIcons name="speedometer" size={14} color="white" />
-               </View>
-             </View>
-             <Text className="text-black dark:text-white text-xl font-bold" numberOfLines={1} adjustsFontSizeToFit>
-               {stats.max_speed}km/h
-             </Text>
-          </Animated.View>
-        </View>
+function StatItem({ icon, value, label, unit }: StatItemProps) {
+  const { isDarkMode } = useThemeContext();
+  
+  return (
+    <View className="items-center">
+      <View className="flex-row items-baseline">
+        <ThemedText className="text-xl font-bold">{value}</ThemedText>
+        {unit && (
+          <ThemedText className="text-xs text-gray-500 ml-1">{unit}</ThemedText>
+        )}
+      </View>
+      <View className="flex-row items-center mt-1">
+        <Ionicons 
+          name={icon} 
+          size={12} 
+          color={isDarkMode ? '#9ca3af' : '#6b7280'} 
+        />
+        <ThemedText className="text-xs text-gray-500 ml-1">{label}</ThemedText>
       </View>
     </View>
   );
