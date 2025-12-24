@@ -566,7 +566,3 @@ export default function DashboardScreen() {
              </Text>
           </Animated.View>
         </View>
-      </View>
-    </View>
-  );
-}
