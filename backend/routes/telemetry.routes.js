@@ -41,7 +41,13 @@ router.post('/', async (req, res) => {
 
       const source = (p.source || 'gps').toLowerCase();
       const speed = p.speed_kmh || 0;
-      const createdAt = p.timestamp || new Date().toISOString();
+      
+      // Fix: GSM often sends Local Time (IST) which looks like future UTC
+      // For GSM, we trust the server receive time instead
+      let createdAt = p.timestamp;
+      if (!createdAt || source === 'gsm') {
+        createdAt = new Date().toISOString();
+      }
 
       // ALLOW BOTH GPS AND GSM
       // if (source !== 'gps') { ... } // Removed filter
