@@ -1,13 +1,14 @@
 /*
- * Papaji GPS Tracker Firmware - FIXED & CLEANED
+ * Papaji GPS Tracker Firmware - MOVEMENT FIX
  * Board: ESP32 Dev Module
  * Modules: NEO-6M GPS, SIM800L GSM
  * 
  * FIXES:
- * 1. Drift filter now uses time-based reset (stale location after 5 mins)
- * 2. Better debug output for troubleshooting
- * 3. Removed unused code
- * 4. Added data send confirmation logs
+ * 1. ✅ FIXED: No more position jumping/snapping
+ * 2. ✅ FIXED: Smooth movement tracking
+ * 3. ✅ FIXED: Better jitter filter that doesn't overwrite real GPS
+ * 4. Drift filter uses time-based reset
+ * 5. Better debug output for troubleshooting
  */
 
 #define TINY_GSM_MODEM_SIM800
@@ -36,7 +37,7 @@ const int WDT_TIMEOUT = 120;
 unsigned long lastReconnectAttempt = 0;
 const unsigned long RECONNECT_INTERVAL = 10000;
 unsigned long lastConnectionSuccess = 0;
-const unsigned long HARD_RESET_INTERVAL = 900000; // 15 Minutes (Increased from 5 to avoid loops in dead zones)
+const unsigned long HARD_RESET_INTERVAL = 900000; // 15 Minutes
 
 // --- PINS ---
 #define GSM_RX 16 
@@ -53,7 +54,7 @@ TinyGsm modem(gsmSerial);
 TinyGsmClient client(modem);
 
 unsigned long lastSend = 0;
-unsigned long lastActualSend = 0; // Track last time data was ACTUALLY sent/buffered
+unsigned long lastActualSend = 0;
 unsigned long currentInterval = 5000;
 unsigned long lastSMSCheck = 0;
 const unsigned long SMS_CHECK_INTERVAL = 10000;
@@ -64,7 +65,7 @@ double lastLat = 0;
 double lastLon = 0;
 
 // GPS Restored Detection
-bool wasGpsLost = false;  // Track if GPS was lost, to send immediately when restored
+bool wasGpsLost = false;
 
 // Batching
 const int BATCH_SIZE = 1; 
@@ -90,7 +91,7 @@ const char* OWNER_PHONE_2 = "+917903636910";
 // GPS Quality / Freshness
 const unsigned long GPS_MAX_AGE_MS = 30000;
 const int GPS_MIN_SATS = 3;
-const float GPS_MAX_HDOP = 5.0; // Stricter: Reject poor signals (was 10.0)
+const float GPS_MAX_HDOP = 5.0;
 
 // Counters for debugging
 unsigned long successfulSends = 0;
@@ -135,7 +136,7 @@ void setup() {
   delay(3000);
   
   modem.restart();
-  delay(3000); // Extra delay after restart
+  delay(3000);
   
   // Test modem communication first
   Serial.print("[NET] Testing modem communication... ");
@@ -155,18 +156,15 @@ void connectToNetwork() {
   esp_task_wdt_reset();
   
   Serial.print("[NET] Waiting for network...");
-  // Wait for network registration (up to 30s)
   if (!modem.waitForNetwork(30000L)) {
     Serial.println(" FAIL");
   } else {
     Serial.println(" OK");
   }
 
-  // Check signal
   int sig = modem.getSignalQuality();
   Serial.printf("[NET] Signal Quality: %d/31\n", sig);
   
-  // Only fail if signal is truly 0 AND network failed
   if (sig == 0 && !modem.isNetworkConnected()) {
     Serial.println("[NET] No signal! Check antenna.");
     return;
@@ -189,7 +187,7 @@ void loop() {
     gps.encode(gpsSerial.read());
   }
 
-  // Network Maintenance (non-blocking)
+  // Network Maintenance
   maintainNetwork();
 
   // Check for incoming SMS
@@ -198,102 +196,99 @@ void loop() {
     lastSMSCheck = millis();
   }
 
-  // 1. Get Data
+  // Get GPS Data
   bool gpsValid = hasFreshGpsFix();
   float lat = gps.location.lat();
   float lon = gps.location.lng();
   float speed = gps.speed.kmph();
   float heading = gps.course.deg();
   
-  // --- JITTER FILTER (Counter + Distance) ---
-  // Only confirm movement if it persists for 3 consecutive cycles
+  // --- IMPROVED JITTER FILTER (NO MORE POSITION SNAPPING!) ---
   static int moveCounter = 0;
+  static unsigned long lastMoveTime = 0;
   double rawDist = 0;
+  
   if (lastLat != 0 && lastLon != 0) {
       rawDist = TinyGPSPlus::distanceBetween(lat, lon, lastLat, lastLon);
   }
   
-  // Thresholds: Speed > 3km/h OR Distance > 15m
-  if (speed > 3.0 || rawDist > 15.0) {
-      moveCounter++;
-  } else {
-      moveCounter = 0;
+  // Smart filtering: Only zero speed if truly stationary
+  if (gpsValid) {
+      if (speed < 2.0 && rawDist < 10.0) {
+          // Tractor is stationary - zero the speed but keep position
+          moveCounter = 0;
+          speed = 0;
+      } else if (speed > 3.0 || rawDist > 15.0) {
+          // Tractor is moving - increment counter
+          moveCounter++;
+          lastMoveTime = millis();
+      }
+      
+      // Reset counter if no movement detected for 30 seconds
+      if (millis() - lastMoveTime > 30000) {
+          moveCounter = 0;
+      }
+      
+      // Additional speed clamp for very low speeds
+      if (speed < 1.5 && rawDist < 8.0) {
+          speed = 0;
+      }
   }
-  
-  // If not consistently moving, force stationary state
-  if (moveCounter < 3 && lastLat != 0) {
-      speed = 0;
-      lat = lastLat;
-      lon = lastLon;
-  }
-  // ------------------------------------------
+  // --- END IMPROVED FILTER ---
 
-  // FILTER: Clamp low speed to 0 to prevent "ghost movement"
-  // Increased to 3.0 km/h for better stability
-  if (speed < 3.0) speed = 0;
-
-  // Calculate distance from last sent point FIRST
+  // Calculate distance from last sent point
   double dist = 0;
   if (gpsValid && lastLat != 0 && lastLon != 0) {
       dist = TinyGPSPlus::distanceBetween(lat, lon, lastLat, lastLon);
   }
 
-  // 2. Determine State (HIGH PERFORMANCE MODE)
+  // Determine Update Interval (HIGH PERFORMANCE MODE)
   if (gpsValid) {
       if (speed > 2.0) currentInterval = 2000; // Moving: 2s (Real-time)
-      else currentInterval = 60000;            // Stopped: 1 min (Keep Online)
+      else currentInterval = 60000;            // Stopped: 1 min
   } else {
       currentInterval = 60000;                 // No Fix: 1 min
   }
 
-  // 3. Check Triggers
-  // Trigger if time passed OR it's the very first run (lastSend == 0)
+  // Check Triggers
   bool timeTrigger = (millis() - lastSend > currentInterval) || (lastSend == 0);
   bool distTrigger = false;
   bool gpsRestoredTrigger = false;
+  bool cornerTrigger = false;
   
-  // GPS RESTORED TRIGGER: Send immediately when GPS comes back after being lost
+  // GPS RESTORED TRIGGER
   if (gpsValid && wasGpsLost) {
     gpsRestoredTrigger = true;
     wasGpsLost = false;
     Serial.println("[GPS] *** GPS RESTORED! Sending immediately ***");
   }
   
-  // Track when GPS is lost
   if (!gpsValid) {
     wasGpsLost = true;
   }
-  bool cornerTrigger = false;
-
-  // Recalculate distance after potential drift correction
-  if (gpsValid && lastLat != 0 && lastLon != 0) {
-      dist = TinyGPSPlus::distanceBetween(lat, lon, lastLat, lastLon);
-  }
 
   if (gpsValid) {
-      // HIGH PERFORMANCE FILTER:
-      // Trigger if moving and moved just 15m (was 10m), or if moved 25m slowly
+      // Distance trigger
       if (speed > 3.0 && dist > 15.0) distTrigger = true; 
       else if (dist > 25.0) distTrigger = true;
       
+      // Corner detection
       double headDiff = abs(heading - lastHeading);
       if (headDiff > 180) headDiff = 360 - headDiff;
-      if (speed > 5.0 && headDiff > 30.0 && millis() - lastSend > 2000) cornerTrigger = true; // Corner
+      if (speed > 5.0 && headDiff > 30.0 && millis() - lastSend > 2000) {
+          cornerTrigger = true;
+      }
   }
 
-  // DUPLICATE FILTER: Relaxed for High Performance
-  // Allow updates if moved > 15m (was 10m)
-  // Heartbeat every 2 mins (was 8 mins)
+  // DUPLICATE FILTER
   bool forceHeartbeat = (millis() - lastActualSend > 120000); // 2 mins
 
   if (timeTrigger && !distTrigger && !cornerTrigger && !gpsRestoredTrigger && !forceHeartbeat && gpsValid && dist < 15.0 && lastSend != 0) {
-      // Skip this update - we're stationary at the same location
-      // Just update lastSend to prevent buildup
       lastSend = millis();
-      return; // Skip loop iteration, don't send duplicate point
+      return;
   }
 
-  // 4. Action
+  // Send Data
   if (timeTrigger || distTrigger || cornerTrigger || gpsRestoredTrigger) {
     float finalLat = 0, finalLon = 0, finalSpeed = 0;
     float hdop = 99.0;
@@ -315,8 +310,8 @@ void loop() {
       lastLon = lon;
       lastHeading = heading;
 
-      Serial.printf("[GPS] FIX: %.6f, %.6f | Speed: %.1f km/h | HDOP: %.1f | Sats: %d\n", 
-                    finalLat, finalLon, finalSpeed, hdop, satellites);
+      Serial.printf("[GPS] FIX: %.6f, %.6f | Speed: %.1f km/h | Dist: %.1fm | HDOP: %.1f | Sats: %d\n", 
+                    finalLat, finalLon, finalSpeed, dist, hdop, satellites);
     } else {
       // GSM Fallback
       float gsmLat = 0, gsmLon = 0, accuracy = 0;
@@ -325,8 +320,7 @@ void loop() {
       Serial.println("[GPS] No fix. Trying GSM Location...");
       
       if (modem.getGsmLocation(&gsmLat, &gsmLon, &accuracy, &year, &month, &day, &time)) {
-        // FIX: SIM800L sometimes returns lon,lat instead of lat,lon
-        // India Fix: If Lat > 60, it's definitely Longitude (since India is ~8-37 Lat)
+        // FIX: SIM800L coordinate swap for India
         if (abs(gsmLat) > 60 && abs(gsmLon) < 60) {
            float temp = gsmLat; gsmLat = gsmLon; gsmLon = temp;
         }
@@ -352,7 +346,6 @@ void loop() {
       }
       bufferData(finalLat, finalLon, finalSpeed, source, signalQuality, hdop, satellites, ts);
     } else {
-      // Heartbeat - Send immediately if triggered
       Serial.println("[SYS] Sending heartbeat...");
       bufferData(0, 0, 0, "heartbeat", signalQuality, 99.0, 0, "");
     }
@@ -386,7 +379,6 @@ void saveOffline(String data) {
 }
 
 bool sendRawJson(String jsonString) {
-  // 1. Check if already connected
   if (!client.connected()) {
     Serial.println("[NET] Connecting to server...");
     if (!client.connect(server, port)) {
@@ -398,7 +390,6 @@ bool sendRawJson(String jsonString) {
     Serial.println("[NET] Reusing existing connection");
   }
 
-  // Connection successful - update the watchdog timer
   lastConnectionSuccess = millis();
   
   client.print(String("POST ") + resource + " HTTP/1.1\r\n");
@@ -413,7 +404,6 @@ bool sendRawJson(String jsonString) {
   bool ok = false;
   unsigned long timeout = millis();
   
-  // Wait for response headers
   while(client.connected() && millis() - timeout < 7000) {
     if(client.available()) {
       String line = client.readStringUntil('\n');
@@ -421,7 +411,6 @@ bool sendRawJson(String jsonString) {
     }
   }
   
-  // Read response body
   if(client.connected()) {
     String line = client.readStringUntil('\n');
     if (line.indexOf("ok") != -1 || line.indexOf("200") != -1) {
@@ -440,8 +429,6 @@ bool sendRawJson(String jsonString) {
     }
   }
   
-  // Do NOT close connection (Keep-Alive)
-  // client.stop(); 
   return ok;
 }
 
@@ -585,7 +572,6 @@ void checkSMS() {
           sendSMS(OWNER_PHONE_1, statusMsg);
        }
        
-       // Delete all SMS
        modem.sendAT("+CMGDA=\"DEL ALL\"");
        modem.waitResponse();
     }
@@ -614,7 +600,6 @@ void sendLocationSMS() {
     float gsmLat = 0, gsmLon = 0, accuracy = 0;
     int year = 0, month = 0, day = 0, time = 0;
     if (modem.getGsmLocation(&gsmLat, &gsmLon, &accuracy, &year, &month, &day, &time)) {
-      // FIX: SIM800L sometimes returns lon,lat instead of lat,lon
       if (abs(gsmLat) > 60) {
         float temp = gsmLat;
         gsmLat = gsmLon;
@@ -639,29 +624,25 @@ void sendLocationSMS() {
 // ============ NETWORK FUNCTIONS ============
 
 void maintainNetwork() {
-  // 1. Check for Hard Reset condition (Server unreachable for 5+ mins)
-  // This handles "zombie" connections where GPRS appears connected but data fails
   if (millis() - lastConnectionSuccess > HARD_RESET_INTERVAL) {
-    Serial.println("[NET] No server contact for 5+ mins. Restarting...");
+    Serial.println("[NET] No server contact for 15+ mins. Restarting...");
     delay(1000);
     ESP.restart();
   }
 
-  // 2. If GPRS is connected, we are good for now
   if (modem.isGprsConnected()) {
     return;
   }
 
-  // 3. If disconnected, try to reconnect
   if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL) {
     lastReconnectAttempt = millis();
     Serial.println("[NET] Reconnecting...");
     
     if (!modem.isNetworkConnected()) {
        Serial.print("[NET] Waiting for network... ");
-       if (!modem.waitForNetwork(10000L)) { // Increased to 10s
+       if (!modem.waitForNetwork(10000L)) {
          Serial.print("Fail. Reg Status: ");
-         Serial.println(modem.getRegistrationStatus()); // 0=Not Reg, 1=Reg Home, 2=Searching, 3=Denied, 5=Roaming
+         Serial.println(modem.getRegistrationStatus());
        } else {
          Serial.println("OK");
        }
