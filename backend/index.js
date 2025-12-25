@@ -392,7 +392,22 @@ app.get('/api/latest', async (req, res) => {
 
   const { error: latestErr, chosen, decision } = await getBestLatestPoint(device_id, { gpsPreferredWindowMin: 3 });
   if (latestErr) return res.status(500).json({ error: latestErr.message });
-  if (!chosen) return res.status(404).json({ error: 'No data found' });
+  
+  // FIX: Return default object instead of 404 when no data exists (e.g. after wipe)
+  if (!chosen) {
+    return res.json({
+      device_id,
+      latitude: 0,
+      longitude: 0,
+      speed: 0,
+      source: 'none',
+      hdop: 0,
+      satellites: 0,
+      signal: 0,
+      created_at: new Date().toISOString(),
+      decision: 'no_data'
+    });
+  }
 
   res.json({
     device_id,
