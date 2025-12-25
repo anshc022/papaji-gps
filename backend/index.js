@@ -150,10 +150,11 @@ app.post('/api/telemetry', async (req, res) => {
       const source = p.source || 'gps';
       const speed = p.speed_kmh || 0;
 
-      // DUPLICATE FILTER: Don't store points within 30m of last point (unless moving)
-      if (source === 'gps' && lastGpsPoint && speed < 3) {
+      // DUPLICATE FILTER: Relaxed for High Performance Mode
+      // Don't store points within 5m of last point (unless moving fast)
+      if (source === 'gps' && lastGpsPoint && speed < 1) {
         const dist = getDistanceMeters(lastGpsPoint.latitude, lastGpsPoint.longitude, finalLat, finalLon);
-        if (dist < 30) {
+        if (dist < 5) {
           console.log(`[FILTER] Skipping GPS point (${dist.toFixed(1)}m from last, speed=${speed})`);
           continue;
         }
