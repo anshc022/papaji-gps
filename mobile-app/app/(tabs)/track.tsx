@@ -105,6 +105,7 @@ export default function TrackScreen() {
   // Track Data State
   const [trackData, setTrackData] = useState<any>({
     route: [],
+    gsmMarkers: [], // GSM points as separate markers
     totalDistance: 0,
     maxSpeed: 0,
     avgSpeed: 0,
@@ -180,13 +181,18 @@ export default function TrackScreen() {
         const gpsPoints = history.filter((p: any) => p.source === 'gps');
         const gsmPoints = history.filter((p: any) => p.source === 'gsm');
         
-        // Use GPS points for route, fallback to all if no GPS
-        const routePoints = gpsPoints.length > 0 ? gpsPoints : history;
-        let route = routePoints.map((p: any) => ({
+        // GPS points for route line only (no GSM in route)
+        let route = gpsPoints.map((p: any) => ({
           latitude: p.latitude,
           longitude: p.longitude,
           speed: p.speed_kmh || 0,
           source: p.source
+        }));
+
+        // GSM points as separate markers (circles, not connected)
+        const gsmMarkers = gsmPoints.map((p: any) => ({
+          latitude: p.latitude,
+          longitude: p.longitude
         }));
 
         // Backend already filters duplicates, just smooth for better visual
@@ -201,6 +207,7 @@ export default function TrackScreen() {
 
         setTrackData({
           route,
+          gsmMarkers,
           totalDistance: parseFloat(stats?.total_distance_km || '0'),
           maxSpeed: parseFloat(stats?.max_speed || '0'),
           avgSpeed: parseFloat(stats?.avg_speed || '0'),
@@ -226,6 +233,7 @@ export default function TrackScreen() {
         // No data for this date - Clear the map
         setTrackData({
           route: [],
+          gsmMarkers: [],
           totalDistance: 0,
           maxSpeed: 0,
           avgSpeed: 0,
@@ -375,6 +383,26 @@ export default function TrackScreen() {
             <View className="bg-green-500 w-4 h-4 rounded-full border-2 border-white" />
           </Marker>
         )}
+
+        {/* GSM Location Circles (not connected with lines) */}
+        {trackData.gsmMarkers && trackData.gsmMarkers.map((marker: any, index: number) => (
+          <Marker
+            key={`gsm-${index}`}
+            coordinate={marker}
+            anchor={{ x: 0.5, y: 0.5 }}
+          >
+            <View
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: 8,
+                backgroundColor: '#f59e0b',
+                borderWidth: 2,
+                borderColor: 'white',
+              }}
+            />
+          </Marker>
+        ))}
       </MapView>
 
       {/* Top Status Bar */}

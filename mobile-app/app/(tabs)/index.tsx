@@ -33,6 +33,7 @@ export default function DashboardScreen() {
   const [tractorLocation, setTractorLocation] = useState({ latitude: 30.7333, longitude: 76.7794 });
   const [currentSpeed, setCurrentSpeed] = useState(0);
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
+  const [gsmMarkers, setGsmMarkers] = useState<any[]>([]); // GSM points as separate markers
   const [hasCentered, setHasCentered] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -88,15 +89,25 @@ export default function DashboardScreen() {
         api.getLatest('papaji_tractor_01')
       ]);
 
-      // Build route from today's history (backend already filters duplicates)
+      // Separate GPS and GSM points
       if (history && history.length > 0) {
-        const route = history.map((p: any) => ({
+        // GPS points - connect with route line
+        const gpsPoints = history.filter((p: any) => p.source === 'gps');
+        const route = gpsPoints.map((p: any) => ({
           latitude: p.latitude,
           longitude: p.longitude
         }));
         setRouteCoordinates(route);
+
+        // GSM points - show as separate markers (no line)
+        const gsmPoints = history.filter((p: any) => p.source === 'gsm');
+        setGsmMarkers(gsmPoints.map((p: any) => ({
+          latitude: p.latitude,
+          longitude: p.longitude
+        })));
       } else {
         setRouteCoordinates([]);
+        setGsmMarkers([]);
       }
 
       // Set live tractor location from latest point
@@ -269,7 +280,7 @@ export default function DashboardScreen() {
           customMapStyle={isDark ? darkMapStyle : []}
           mapType={mapType}
         >
-          {/* Today's Route Line */}
+          {/* Today's GPS Route Line */}
           {routeCoordinates.length > 1 && (
             <Polyline
               coordinates={routeCoordinates}
@@ -277,6 +288,26 @@ export default function DashboardScreen() {
               strokeWidth={4}
             />
           )}
+
+          {/* GSM Location Circles (not connected) */}
+          {gsmMarkers.map((marker, index) => (
+            <Marker
+              key={`gsm-${index}`}
+              coordinate={marker}
+              anchor={{ x: 0.5, y: 0.5 }}
+            >
+              <View
+                style={{
+                  width: 16,
+                  height: 16,
+                  borderRadius: 8,
+                  backgroundColor: '#f59e0b',
+                  borderWidth: 2,
+                  borderColor: 'white',
+                }}
+              />
+            </Marker>
+          ))}
 
           {/* Tractor Marker - Live Location */}
           <Marker 
