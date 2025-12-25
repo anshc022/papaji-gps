@@ -6,10 +6,12 @@
  * Centralized API functions for the mobile app
  */
 
+import Config from '@/constants/Config';
+
 // ============================================
 // CONFIGURATION
 // ============================================
-const API_BASE_URL = 'http://3.27.84.253:3000';
+const API_BASE_URL = Config.API_URL;
 const REQUEST_TIMEOUT = 10000; // 10 seconds
 
 // ============================================
@@ -21,7 +23,7 @@ export interface LocationPoint {
   latitude: number;
   longitude: number;
   speed_kmh: number;
-  source: 'gps' | 'none'; // 'none' when no GPS available
+  source: 'gps' | 'none';
   signal?: number;
   hdop?: number;
   satellites?: number;
@@ -29,29 +31,27 @@ export interface LocationPoint {
   created_at: string;
 }
 
-// Response from history endpoint - GPS ONLY MODE (gsm kept for backward compatibility)
+// Response from history endpoint
 export interface HistoryResponse {
   gps: LocationPoint[];
-  gsm?: LocationPoint[]; // Ignored, GPS only
-}
-
-export interface StopPoint {
-  latitude: number;
-  longitude: number;
-  duration_minutes: number;
-  start_time: string;
-  end_time?: string;
-  ongoing?: boolean;
+  gsm?: LocationPoint[]; // Ignored
 }
 
 export interface Stats {
-  distance_km: string;
-  max_speed_kmh: string;
-  avg_speed_kmh: string;
-  active_time_hours: string;
-  data_points: number;
-  stops: StopPoint[];
-  last_update: string | null;
+  date: string;
+  max_speed: number;
+  total_distance_km: number;
+  total_duration_minutes: number;
+  total_points: number;
+  status: string;
+  source: string;
+  signal: number;
+  hdop: number;
+  satellites: number;
+  last_lat: number;
+  last_lon: number;
+  last_speed: number;
+  last_seen: string;
 }
 
 export interface SmsMessage {
@@ -127,20 +127,9 @@ export const api = {
   },
 
   /**
-   * Get location history
-   * @param deviceId Device identifier
-   * @param hours Number of hours to fetch (default: 24)
-   */
-  async getHistory(deviceId: string, hours = 24): Promise<LocationPoint[]> {
-    const data = await request<LocationPoint[]>(`/api/history?device_id=${deviceId}&hours=${hours}`);
-    return data || [];
-  },
-
-  /**
    * Get location history for a specific date
    * @param deviceId Device identifier
    * @param date Date in YYYY-MM-DD format
-   * @returns Separate GPS and GSM point arrays
    */
   async getHistoryByDate(deviceId: string, date: string): Promise<HistoryResponse> {
     const data = await request<HistoryResponse>(`/api/history?device_id=${deviceId}&date=${date}`);
@@ -150,18 +139,8 @@ export const api = {
   /**
    * Get today's statistics
    */
-  async getStats(deviceId: string): Promise<any | null> {
-    return request<any>(`/api/stats?device_id=${deviceId}`);
-  },
-
-  /**
-   * Get stop locations
-   * @param deviceId Device identifier
-   * @param hours Number of hours to analyze (default: 24)
-   */
-  async getStops(deviceId: string, hours = 24): Promise<StopPoint[]> {
-    const data = await request<StopPoint[]>(`/api/stops?device_id=${deviceId}&hours=${hours}`);
-    return data || [];
+  async getStats(deviceId: string): Promise<Stats | null> {
+    return request<Stats>(`/api/stats?device_id=${deviceId}`);
   },
 
   /**
@@ -169,7 +148,7 @@ export const api = {
    * @param limit Maximum messages to fetch (default: 50)
    */
   async getSmsInbox(limit = 50): Promise<SmsMessage[]> {
-    const data = await request<SmsMessage[]>(`/api/admin/sms?limit=${limit}`);
+    const data = await request<SmsMessage[]>(`/api/sms/list?limit=${limit}`);
     return data || [];
   },
 
@@ -178,15 +157,18 @@ export const api = {
    * @param limit Maximum logs to fetch (default: 100)
    */
   async getServerLogs(limit = 100): Promise<ServerLog[]> {
-    const data = await request<ServerLog[]>(`/api/admin/logs?limit=${limit}`);
-    return data || [];
+    const data = await request<any>(`/api/admin/logs`);
+    return data?.logs || [];
   },
 
   /**
    * Clear server logs
    */
   async clearServerLogs(): Promise<boolean> {
-    const result = await request('/api/admin/clear-logs', { method: 'POST' });
+    const result = await request('/api/admin/clear-data', { 
+      method: 'POST',
+      body: JSON.stringify({ pin: '1477' })
+    });
     return result !== null;
   },
 
@@ -198,20 +180,7 @@ export const api = {
   async resetDevice(deviceId: string, pin: string): Promise<boolean> {
     const result = await request('/api/admin/reset-device', {
       method: 'POST',
-      body: JSON.stringify({ device_id: deviceId, type: 'hard', pin }),
-    });
-    return result !== null;
-  },
-
-  /**
-   * Soft reconnect device
-   * @param deviceId Device identifier  
-   * @param pin Security PIN
-   */
-  async reconnectDevice(deviceId: string, pin: string): Promise<boolean> {
-    const result = await request('/api/admin/reset-device', {
-      method: 'POST',
-      body: JSON.stringify({ device_id: deviceId, type: 'soft', pin }),
+      body: JSON.stringify({ device_id: deviceId, pin })
     });
     return result !== null;
   },
@@ -221,27 +190,7 @@ export const api = {
    * @param id SMS ID
    */
   async deleteSms(id: number): Promise<boolean> {
-    const result = await request(`/api/admin/sms/${id}`, { method: 'DELETE' });
-    return result !== null;
-  },
-
-  /**
-   * Clear all GPS/GSM data
-   * @param pin Security PIN (default: 1477)
-   */
-  async clearAllData(pin = '1477'): Promise<boolean> {
-    const result = await request('/api/admin/clear-data', { 
-      method: 'POST',
-      body: JSON.stringify({ pin })
-    });
-    return result !== null;
-  },
-
-  /**
-   * Check server health
-   */
-  async healthCheck(): Promise<boolean> {
-    const result = await request<{ status: string }>('/api/logs');
+    const result = await request(`/api/sms/${id}`, { method: 'DELETE' });
     return result !== null;
   },
 
@@ -253,7 +202,4 @@ export const api = {
   },
 };
 
-// ============================================
-// EXPORT
-// ============================================
 export default api;

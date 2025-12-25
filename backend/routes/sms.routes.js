@@ -46,15 +46,15 @@ router.post('/incoming', async (req, res) => {
   res.json({ success: true });
 });
 
-// GET /api/admin/sms
-router.get('/admin/sms', async (req, res) => {
+// GET /api/sms/list
+router.get('/list', async (req, res) => {
   const { data, error } = await SMSModel.getRecent(50);
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
-// DELETE /api/admin/sms/:id
-router.delete('/admin/sms/:id', async (req, res) => {
+// DELETE /api/sms/:id
+router.delete('/:id', async (req, res) => {
   const { id } = req.params;
   const { error } = await SMSModel.delete(id);
   if (error) return res.status(500).json({ error: error.message });
