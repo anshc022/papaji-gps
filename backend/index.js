@@ -337,7 +337,12 @@ app.get('/api/stats', async (req, res) => {
       if (p1.speed > maxSpeed) maxSpeed = p1.speed;
 
       const dist = getDistanceFromLatLonInKm(p1.latitude, p1.longitude, p2.latitude, p2.longitude);
-      if (dist < 100) totalDistanceKm += dist; // Ignore jumps > 100km
+      
+      // STATS FILTER: Ignore tiny jitter movements (< 50m) to prevent "19km in a room"
+      // Only count distance if moved > 0.05km (50m) OR if speed was significant (> 5km/h)
+      if (dist < 100 && (dist > 0.05 || p1.speed > 5)) {
+         totalDistanceKm += dist; 
+      }
 
       const diffMins = (new Date(p2.created_at) - new Date(p1.created_at)) / 1000 / 60;
       if (diffMins < 10 && diffMins > 0) totalDurationMinutes += diffMins;
