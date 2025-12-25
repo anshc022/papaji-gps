@@ -65,17 +65,20 @@ async function getBestLatestPoint(deviceId, opts = {}) {
   const now = Date.now();
   const gpsTime = new Date(lastGps.created_at).getTime();
   const gsmTime = new Date(lastGsm.created_at).getTime();
+  
+  // STRICTER GPS PRIORITY:
+  // Only prefer GPS if it is VERY fresh (within 1 minute)
+  // Otherwise, if GSM is newer, show GSM immediately.
+  // This fixes the issue where App shows "GPS" even when using GSM fallback.
   const gpsAgeMinutes = (now - gpsTime) / 60000;
   
-  // GPS PRIORITY: If GPS is fresh (within 2 minutes), ALWAYS prefer GPS
-  // This makes GPS switch instantly when it comes back
-  if (gpsAgeMinutes <= 2) {
+  if (gpsAgeMinutes <= 1 && gpsTime >= gsmTime) {
     return { error: null, chosen: lastGps, decision: 'gps_fresh_priority' };
   }
   
-  // If GPS is stale (>2 mins old), use GSM if it's newer
+  // If GSM is newer (even by a second), use GSM
   if (gsmTime > gpsTime) {
-    return { error: null, chosen: lastGsm, decision: 'gsm_newer_gps_stale' };
+    return { error: null, chosen: lastGsm, decision: 'gsm_newer' };
   }
   
   // Fallback to GPS
