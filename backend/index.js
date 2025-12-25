@@ -338,9 +338,9 @@ app.get('/api/stats', async (req, res) => {
 
       const dist = getDistanceFromLatLonInKm(p1.latitude, p1.longitude, p2.latitude, p2.longitude);
       
-      // STATS FILTER: Ignore tiny jitter movements (< 50m) to prevent "19km in a room"
-      // Only count distance if moved > 0.05km (50m) OR if speed was significant (> 5km/h)
-      if (dist < 100 && (dist > 0.05 || p1.speed > 5)) {
+      // STATS FILTER: Relaxed to match hardware (10m or 2km/h)
+      // This ensures we count slow tractor work but still ignore tiny GPS jitter
+      if (dist < 100 && (dist > 0.01 || p1.speed > 2)) {
          totalDistanceKm += dist; 
       }
 
