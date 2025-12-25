@@ -310,9 +310,9 @@ export default function DashboardScreen() {
           {stats.source === 'gsm' && (
             <Circle
               center={tractorLocation}
-              radius={500} // Approx 500m accuracy for GSM
-              fillColor="rgba(239, 68, 68, 0.15)" // Red tint
-              strokeColor="rgba(239, 68, 68, 0.5)"
+              radius={150} // Smaller radius
+              fillColor="rgba(239, 68, 68, 0.4)" // Darker red
+              strokeColor="rgba(239, 68, 68, 0.8)"
               strokeWidth={1}
             />
           )}
