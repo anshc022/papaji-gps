@@ -186,7 +186,10 @@ export default function DeveloperScreen() {
     return (
       <SafeAreaView className={`flex-1 items-center justify-center p-6 ${isDark ? 'bg-[#0a0a0a]' : 'bg-gray-50'}`}>
         <Animated.View entering={FadeInDown.springify()} className="items-center">
-          <View className={`w-24 h-24 rounded-full items-center justify-center mb-6 ${isDark ? 'bg-gray-800' : 'bg-gray-200'}`}>
+          <View 
+            className="w-24 h-24 rounded-full items-center justify-center mb-6"
+            style={{ backgroundColor: isDark ? '#2a2a2a' : '#e5e7eb' }}
+          >
             <MaterialCommunityIcons name="shield-lock" size={48} color={isDark ? '#666' : '#999'} />
           </View>
           
@@ -205,9 +208,13 @@ export default function DeveloperScreen() {
             keyboardType="number-pad"
             secureTextEntry
             maxLength={4}
-            className={`text-center text-3xl tracking-[20px] w-56 py-4 rounded-2xl mb-6 font-bold ${
-              isDark ? 'bg-gray-800 text-white' : 'bg-white text-gray-900 border border-gray-200'
-            }`}
+            className="text-center text-3xl tracking-[20px] w-56 py-4 rounded-2xl mb-6 font-bold"
+            style={{ 
+              backgroundColor: isDark ? '#2a2a2a' : '#ffffff',
+              color: isDark ? '#ffffff' : '#111827',
+              borderWidth: isDark ? 0 : 1,
+              borderColor: '#e5e7eb'
+            }}
           />
           
           <TouchableOpacity 
@@ -246,7 +253,11 @@ export default function DeveloperScreen() {
         </Animated.View>
 
         {/* Server Status Card */}
-        <Animated.View entering={FadeInDown.delay(200)} className={`rounded-2xl p-4 mb-4 ${isDark ? 'bg-gray-900' : 'bg-white'}`}>
+        <Animated.View 
+          entering={FadeInDown.delay(200)} 
+          className="rounded-2xl p-4 mb-4"
+          style={{ backgroundColor: isDark ? '#1a1a1a' : '#ffffff' }}
+        >
           <View className="flex-row items-center justify-between mb-3">
             <Text className={`font-semibold ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Server Status</Text>
             <View className={`flex-row items-center px-3 py-1 rounded-full ${
@@ -267,15 +278,24 @@ export default function DeveloperScreen() {
           
           {serverInfo && (
             <View className="flex-row gap-4 mt-2">
-              <View className={`flex-1 p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
+              <View 
+                className="flex-1 p-3 rounded-xl"
+                style={{ backgroundColor: isDark ? '#2a2a2a' : '#f3f4f6' }}
+              >
                 <Text className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>Uptime</Text>
                 <Text className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{serverInfo.uptime}m</Text>
               </View>
-              <View className={`flex-1 p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
+              <View 
+                className="flex-1 p-3 rounded-xl"
+                style={{ backgroundColor: isDark ? '#2a2a2a' : '#f3f4f6' }}
+              >
                 <Text className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>Memory</Text>
                 <Text className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{serverInfo.memory}MB</Text>
               </View>
-              <View className={`flex-1 p-3 rounded-xl ${isDark ? 'bg-gray-800' : 'bg-gray-100'}`}>
+              <View 
+                className="flex-1 p-3 rounded-xl"
+                style={{ backgroundColor: isDark ? '#2a2a2a' : '#f3f4f6' }}
+              >
                 <Text className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>Node</Text>
                 <Text className={`font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>{serverInfo.nodeVersion}</Text>
               </View>
@@ -285,7 +305,11 @@ export default function DeveloperScreen() {
 
         {/* Device Stats */}
         {dbStats && (
-          <Animated.View entering={FadeInDown.delay(300)} className={`rounded-2xl p-4 mb-4 ${isDark ? 'bg-gray-900' : 'bg-white'}`}>
+          <Animated.View 
+            entering={FadeInDown.delay(300)} 
+            className="rounded-2xl p-4 mb-4"
+            style={{ backgroundColor: isDark ? '#1a1a1a' : '#ffffff' }}
+          >
             <Text className={`font-semibold mb-3 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>Device Statistics</Text>
             <View className="flex-row flex-wrap gap-3">
               <StatCard label="Points" value={dbStats.total_points || 0} icon="database" isDark={isDark} />
@@ -298,7 +322,14 @@ export default function DeveloperScreen() {
 
         {/* ESP32 Telemetry */}
         {dbStats && (
-          <Animated.View entering={FadeInDown.delay(400)} className={`rounded-2xl p-4 mb-4 border ${isDark ? 'bg-gray-900 border-green-900' : 'bg-white border-green-200'}`}>
+          <Animated.View 
+            entering={FadeInDown.delay(400)} 
+            className="rounded-2xl p-4 mb-4 border"
+            style={{ 
+              backgroundColor: isDark ? '#1a1a1a' : '#ffffff',
+              borderColor: isDark ? '#14532d' : '#bbf7d0'
+            }}
+          >
             <View className="flex-row items-center mb-4">
               <MaterialCommunityIcons name="chip" size={20} color="#22c55e" />
               <Text className={`font-semibold ml-2 ${isDark ? 'text-green-400' : 'text-green-700'}`}>ESP32 Telemetry</Text>
@@ -349,11 +380,8 @@ export default function DeveloperScreen() {
               <TouchableOpacity 
                 key={mode}
                 onPress={() => setLogViewMode(mode)} 
-                className={`flex-1 py-2.5 rounded-xl items-center ${
-                  logViewMode === mode 
-                    ? 'bg-[#FF5500]' 
-                    : (isDark ? 'bg-gray-800' : 'bg-gray-200')
-                }`}
+                className="flex-1 py-2.5 rounded-xl items-center"
+                style={{ backgroundColor: logViewMode === mode ? '#FF5500' : (isDark ? '#2a2a2a' : '#e5e7eb') }}
               >
                 <Text className={`font-semibold text-sm ${
                   logViewMode === mode 

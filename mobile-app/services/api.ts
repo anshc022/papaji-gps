@@ -131,6 +131,16 @@ export const api = {
   },
 
   /**
+   * Get location history for a specific date
+   * @param deviceId Device identifier
+   * @param date Date in YYYY-MM-DD format
+   */
+  async getHistoryByDate(deviceId: string, date: string): Promise<LocationPoint[]> {
+    const data = await request<LocationPoint[]>(`/api/history?device_id=${deviceId}&date=${date}`);
+    return data || [];
+  },
+
+  /**
    * Get today's statistics
    */
   async getStats(deviceId: string): Promise<any | null> {

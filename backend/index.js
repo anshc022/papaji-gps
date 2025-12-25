@@ -31,10 +31,9 @@ app.use(cors());
 app.use(express.json());
 
 async function getBestLatestPoint(deviceId, opts = {}) {
-  const gpsPreferredWindowMin = Number.isFinite(opts.gpsPreferredWindowMin)
-    ? opts.gpsPreferredWindowMin
-    : 3;
-
+  // STRICT MODE: If GSM is newer by even 1 second, show GSM.
+  // This fixes the issue where "GPS" is shown even when inside the house.
+  
   // 1. Get Latest GPS
   const { data: lastGpsData } = await supabase
     .from('gps_logs')
@@ -65,14 +64,8 @@ async function getBestLatestPoint(deviceId, opts = {}) {
 
   const gpsTime = new Date(lastGps.created_at).getTime();
   const gsmTime = new Date(lastGsm.created_at).getTime();
-  const ageDiffMins = (gsmTime - gpsTime) / 1000 / 60;
-
-  // If GSM is newer, but GPS is recent (within window), prefer GPS
-  if (ageDiffMins > 0 && ageDiffMins <= gpsPreferredWindowMin) {
-      return { error: null, chosen: lastGps, decision: 'prefer_recent_gps' };
-  }
-
-  // Otherwise return the strictly newer one
+  
+  // STRICT COMPARISON: Whichever is newer wins.
   return gpsTime >= gsmTime 
       ? { error: null, chosen: lastGps, decision: 'latest_is_gps' }
       : { error: null, chosen: lastGsm, decision: 'latest_is_gsm' };
@@ -103,12 +96,40 @@ app.post('/api/telemetry', async (req, res) => {
     const gpsRows = [];
     const gsmRows = [];
 
-    points.forEach(p => {
-      const createdAt = new Date().toISOString();
+    // Helper to calculate distance between two points in meters
+    const getDistanceMeters = (lat1, lon1, lat2, lon2) => {
+      const dLat = (lat2 - lat1) * 111320;
+      const dLon = (lon2 - lon1) * 111320 * Math.cos(lat1 * Math.PI / 180);
+      return Math.sqrt(dLat * dLat + dLon * dLon);
+    };
+
+    // Get last stored points for duplicate detection
+    let lastGpsPoint = null;
+    let lastGsmPoint = null;
+    
+    const deviceId = points[0]?.device_id;
+    if (deviceId) {
+      const [gpsLast, gsmLast] = await Promise.all([
+        supabase.from('gps_logs').select('latitude, longitude').eq('device_id', deviceId).order('created_at', { ascending: false }).limit(1),
+        supabase.from('gsm_logs').select('latitude, longitude').eq('device_id', deviceId).order('created_at', { ascending: false }).limit(1)
+      ]);
+      if (gpsLast.data && gpsLast.data.length > 0) lastGpsPoint = gpsLast.data[0];
+      if (gsmLast.data && gsmLast.data.length > 0) lastGsmPoint = gsmLast.data[0];
+    }
+
+    for (const p of points) {
+      // Use device timestamp if available, otherwise server time
+      const createdAt = p.timestamp ? p.timestamp : new Date().toISOString();
       
       // Fix: Swap Lat/Lon if swapped (India region check)
-      let finalLat = p.latitude;
-      let finalLon = p.longitude;
+      let finalLat = parseFloat(p.latitude);
+      let finalLon = parseFloat(p.longitude);
+      
+      // Basic Validation: Ignore 0,0 or invalid range
+      if (!finalLat || !finalLon) continue;
+      if (finalLat === 0 && finalLon === 0) continue;
+      if (Math.abs(finalLat) > 90 || Math.abs(finalLon) > 180) continue;
+
       if (Math.abs(finalLat) > 60 && Math.abs(finalLon) < 60) {
          const temp = finalLat;
          finalLat = finalLon;
@@ -116,36 +137,62 @@ app.post('/api/telemetry', async (req, res) => {
       }
 
       const source = p.source || 'gps';
+      const speed = p.speed_kmh || 0;
+
+      // DUPLICATE FILTER: Don't store points within 30m of last point (unless moving)
+      if (source === 'gps' && lastGpsPoint && speed < 3) {
+        const dist = getDistanceMeters(lastGpsPoint.latitude, lastGpsPoint.longitude, finalLat, finalLon);
+        if (dist < 30) {
+          console.log(`[FILTER] Skipping GPS point (${dist.toFixed(1)}m from last, speed=${speed})`);
+          continue;
+        }
+      }
+      if (source === 'gsm' && lastGsmPoint) {
+        const dist = getDistanceMeters(lastGsmPoint.latitude, lastGsmPoint.longitude, finalLat, finalLon);
+        if (dist < 50) {
+          console.log(`[FILTER] Skipping GSM point (${dist.toFixed(1)}m from last)`);
+          continue;
+        }
+      }
 
       if (source === 'gps') {
-        gpsRows.push({
-            device_id: p.device_id,
-            latitude: finalLat,
-            longitude: finalLon,
-            speed: p.speed_kmh,
-            battery: p.battery_voltage || 4.0,
-            signal: p.signal || 0,
-            hdop: p.hdop || null,
-            satellites: p.satellites || 0,
-            created_at: createdAt
-        });
+          const row = {
+              device_id: p.device_id,
+              latitude: finalLat,
+              longitude: finalLon,
+              speed: speed,
+              battery: p.battery_voltage || 4.0,
+              signal: p.signal || 0,
+              hdop: p.hdop || null,
+              satellites: p.satellites || 0,
+              created_at: createdAt
+          };
+          gpsRows.push(row);
+          lastGpsPoint = { latitude: finalLat, longitude: finalLon }; // Update for next point
       } else {
-        gsmRows.push({
-            device_id: p.device_id,
-            latitude: finalLat,
-            longitude: finalLon,
-            accuracy: p.hdop || 500, // Use hdop field as accuracy for GSM if passed
-            battery: p.battery_voltage || 4.0,
-            signal: p.signal || 0,
-            created_at: createdAt
-        });
+          const row = {
+              device_id: p.device_id,
+              latitude: finalLat,
+              longitude: finalLon,
+              accuracy: p.hdop || 500,
+              battery: p.battery_voltage || 4.0,
+              signal: p.signal || 0,
+              created_at: createdAt
+          };
+          gsmRows.push(row);
+          lastGsmPoint = { latitude: finalLat, longitude: finalLon }; // Update for next point
       }
-    });
+    }
 
-    // Bulk Insert
+    // Bulk Insert (only if there are rows to insert)
     const promises = [];
     if (gpsRows.length > 0) promises.push(supabase.from('gps_logs').insert(gpsRows));
     if (gsmRows.length > 0) promises.push(supabase.from('gsm_logs').insert(gsmRows));
+
+    if (promises.length === 0) {
+      // All points were filtered as duplicates
+      return res.json({ status: 'ok', filtered: true });
+    }
 
     const results = await Promise.all(promises);
     const errors = results.filter(r => r.error).map(r => r.error);
@@ -241,24 +288,40 @@ app.get('/api/stats', async (req, res) => {
   const { error: latestErr, chosen: lastPointData } = await getBestLatestPoint(device_id, { gpsPreferredWindowMin: 3 });
   if (latestErr) return res.status(500).json({ error: latestErr.message });
 
-  // 2. Get Today's Stats (IST) - ONLY FROM GPS LOGS for accuracy
+  // 2. Get Today's Stats (IST)
   const { start } = getISTDateRange();
 
-  const { data, error } = await supabase
+  // Fetch GPS Logs
+  const { data: gpsData, error: gpsError } = await supabase
     .from('gps_logs')
     .select('latitude, longitude, speed, created_at')
     .eq('device_id', device_id)
     .gte('created_at', start)
     .order('created_at', { ascending: true });
 
-  if (error) return res.status(500).json({ error: error.message });
+  if (gpsError) return res.status(500).json({ error: gpsError.message });
+
+  // Fetch GSM Logs (Fallback for stats if GPS is missing)
+  const { data: gsmData, error: gsmError } = await supabase
+    .from('gsm_logs')
+    .select('latitude, longitude, created_at')
+    .eq('device_id', device_id)
+    .gte('created_at', start)
+    .order('created_at', { ascending: true });
+
+  if (gsmError) return res.status(500).json({ error: gsmError.message });
+
+  // Combine for stats calculation if GPS is sparse
+  let validPoints = gpsData || [];
+  if (validPoints.length < 2 && gsmData && gsmData.length > 1) {
+      // If we have almost no GPS data but lots of GSM data, use GSM for stats
+      validPoints = gsmData.map(p => ({...p, speed: 0})); // GSM has no speed
+  }
 
   let maxSpeed = 0;
   let totalDistanceKm = 0;
   let totalDurationMinutes = 0;
   
-  const validPoints = data || [];
-
   if (validPoints.length > 1) {
     for (let i = 0; i < validPoints.length - 1; i++) {
       const p1 = validPoints[i];
@@ -286,6 +349,9 @@ app.get('/api/stats', async (req, res) => {
       // Increased threshold to 10 mins to account for network delays
       status = diffMinutes < 10 ? 'Online' : `Last seen ${Math.round(diffMinutes)}m ago`;
   }
+  
+  // DEBUG LOG
+  console.log(`[STATS] Device: ${device_id} | Source: ${lastPointData ? lastPointData.source : 'none'} | Status: ${status}`);
 
   res.json({
     date: new Date().toISOString().split('T')[0],
