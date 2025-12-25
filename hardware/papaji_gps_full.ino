@@ -88,10 +88,10 @@ void sendLocationSMS();
 const char* OWNER_PHONE_1 = "+919939630600";
 const char* OWNER_PHONE_2 = "+917903636910";
 
-// GPS Quality / Freshness
-const unsigned long GPS_MAX_AGE_MS = 5000; // FIXED: 5 seconds (was 30s - too stale!)
-const int GPS_MIN_SATS = 4; // FIXED: Need 4 sats minimum for reliability
-const float GPS_MAX_HDOP = 5.0;
+// GPS Quality / Freshness - ULTRA STRICT for indoor testing
+const unsigned long GPS_MAX_AGE_MS = 3000; // STRICTER: 3 seconds (was 5s)
+const int GPS_MIN_SATS = 6; // STRICTER: 6 satellites minimum (was 4)
+const float GPS_MAX_HDOP = 2.5; // STRICTER: HDOP < 2.5 for good accuracy (was 5.0)
 
 // Counters for debugging
 unsigned long successfulSends = 0;
