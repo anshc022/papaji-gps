@@ -51,51 +51,65 @@ export default function HistoryScreen() {
 
     for (const day of days) {
       try {
-        const history = await api.getHistoryByDate('papaji_tractor_01', day.date);
+        const historyResponse = await api.getHistoryByDate('papaji_tractor_01', day.date);
         
-        if (history && history.length > 0) {
+        // Combine GPS and GSM for stats calculation
+        const gpsPoints = historyResponse?.gps || [];
+        const gsmPoints = historyResponse?.gsm || [];
+        const allPoints = [...gpsPoints, ...gsmPoints].sort((a, b) => 
+          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+        );
+        
+        if (allPoints.length > 0) {
           // Calculate stats from history points
           let totalDistance = 0;
           let maxSpeed = 0;
-          let gpsPoints = 0;
-          let gsmPoints = 0;
+          let gpsCount = gpsPoints.length;
+          let gsmCount = gsmPoints.length;
 
-          for (let i = 0; i < history.length; i++) {
-            const point = history[i];
+          for (let i = 0; i < allPoints.length; i++) {
+            const point = allPoints[i];
             
-            // Count source types
-            if (point.source === 'gps') gpsPoints++;
-            else gsmPoints++;
+            // Track max speed (only from GPS points usually)
+            const speed = (point as any).speed_kmh || (point as any).speed || 0;
+            if (speed > maxSpeed) maxSpeed = speed;
             
-            // Track max speed
-            if (point.speed && point.speed > maxSpeed) maxSpeed = point.speed;
-            
-            // Calculate distance
-            if (i > 0) {
-              const prev = history[i - 1];
-              const dist = getDistanceFromLatLon(
-                prev.latitude, prev.longitude,
-                point.latitude, point.longitude
-              );
-              if (dist < 1) totalDistance += dist; // Ignore jumps > 1km
+            // Calculate distance (only between GPS points for accuracy)
+            if (point.source === 'gps' && i > 0) {
+              // Find previous GPS point
+              let prevGps = null;
+              for(let j=i-1; j>=0; j--) {
+                if(allPoints[j].source === 'gps') {
+                  prevGps = allPoints[j];
+                  break;
+                }
+              }
+              
+              if (prevGps) {
+                const dist = getDistanceFromLatLon(
+                  prevGps.latitude, prevGps.longitude,
+                  point.latitude, point.longitude
+                );
+                if (dist < 1) totalDistance += dist; // Ignore jumps > 1km
+              }
             }
           }
 
           // Calculate duration
-          const firstTime = new Date(history[0].created_at);
-          const lastTime = new Date(history[history.length - 1].created_at);
+          const firstTime = new Date(allPoints[0].created_at);
+          const lastTime = new Date(allPoints[allPoints.length - 1].created_at);
           const durationMins = Math.round((lastTime.getTime() - firstTime.getTime()) / 1000 / 60);
 
           summaries.push({
             date: day.date,
             displayDate: day.displayDate,
             dayName: day.dayName,
-            totalPoints: history.length,
+            totalPoints: allPoints.length,
             totalDistance: Math.round(totalDistance * 100) / 100,
             maxSpeed: Math.round(maxSpeed),
             duration: durationMins,
-            gpsPoints,
-            gsmPoints,
+            gpsPoints: gpsCount,
+            gsmPoints: gsmCount,
             firstTime: firstTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
             lastTime: lastTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
           });
