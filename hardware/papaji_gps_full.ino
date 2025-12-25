@@ -62,6 +62,9 @@ double lastHeading = 0;
 double lastLat = 0; 
 double lastLon = 0;
 
+// GPS Restored Detection
+bool wasGpsLost = false;  // Track if GPS was lost, to send immediately when restored
+
 // Batching
 const int BATCH_SIZE = 1; 
 DynamicJsonDocument batchDoc(8192);
@@ -228,6 +231,19 @@ void loop() {
   // Trigger if time passed OR it's the very first run (lastSend == 0)
   bool timeTrigger = (millis() - lastSend > currentInterval) || (lastSend == 0);
   bool distTrigger = false;
+  bool gpsRestoredTrigger = false;
+  
+  // GPS RESTORED TRIGGER: Send immediately when GPS comes back after being lost
+  if (gpsValid && wasGpsLost) {
+    gpsRestoredTrigger = true;
+    wasGpsLost = false;
+    Serial.println("[GPS] *** GPS RESTORED! Sending immediately ***");
+  }
+  
+  // Track when GPS is lost
+  if (!gpsValid) {
+    wasGpsLost = true;
+  }
   bool cornerTrigger = false;
 
   // Recalculate distance after potential drift correction
@@ -249,7 +265,8 @@ void loop() {
 
   // DUPLICATE FILTER: Skip sending if stationary and haven't moved significantly
   // Only send time-triggered updates if we moved at least 30 meters
-  if (timeTrigger && !distTrigger && !cornerTrigger && gpsValid && dist < 30.0 && lastSend != 0) {
+  // BUT always allow GPS restored trigger through
+  if (timeTrigger && !distTrigger && !cornerTrigger && !gpsRestoredTrigger && gpsValid && dist < 30.0 && lastSend != 0) {
       // Skip this update - we're stationary at the same location
       // Just update lastSend to prevent buildup
       lastSend = millis();
@@ -257,7 +274,7 @@ void loop() {
   }
 
   // 4. Action
-  if (timeTrigger || distTrigger || cornerTrigger) {
+  if (timeTrigger || distTrigger || cornerTrigger || gpsRestoredTrigger) {
     float finalLat = 0, finalLon = 0, finalSpeed = 0;
     float hdop = 99.0;
     int satellites = 0;
