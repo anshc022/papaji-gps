@@ -51,8 +51,9 @@ export default function HistoryScreen() {
       try {
         const historyResponse = await api.getHistoryByDate('papaji_tractor_01', day.date);
         
-        // GPS ONLY MODE
-        const gpsPoints = historyResponse?.gps || [];
+        // GPS ONLY MODE - Filter out GSM points for stats
+        const allPoints = historyResponse?.gps || [];
+        const gpsPoints = allPoints.filter((p: any) => p.source !== 'gsm');
         
         if (gpsPoints.length > 0) {
           // Calculate stats from GPS points only
