@@ -55,39 +55,41 @@ export default function HistoryScreen() {
         const allPoints = historyResponse?.gps || [];
         const gpsPoints = allPoints.filter((p: any) => p.source !== 'gsm');
         
-        if (gpsPoints.length > 0) {
+        if (allPoints.length > 0) {
           // Calculate stats from GPS points only
           let totalDistance = 0;
           let maxSpeed = 0;
 
-          for (let i = 0; i < gpsPoints.length; i++) {
-            const point = gpsPoints[i];
-            
-            // Track max speed
-            const speed = (point as any).speed_kmh || (point as any).speed || 0;
-            if (speed > maxSpeed) maxSpeed = speed;
-            
-            // Calculate distance between consecutive GPS points
-            if (i > 0) {
-              const prevPoint = gpsPoints[i - 1];
-              const dist = getDistanceFromLatLon(
-                prevPoint.latitude, prevPoint.longitude,
-                point.latitude, point.longitude
-              );
-              if (dist < 1) totalDistance += dist; // Ignore jumps > 1km
+          if (gpsPoints.length > 0) {
+            for (let i = 0; i < gpsPoints.length; i++) {
+              const point = gpsPoints[i];
+              
+              // Track max speed
+              const speed = (point as any).speed_kmh || (point as any).speed || 0;
+              if (speed > maxSpeed) maxSpeed = speed;
+              
+              // Calculate distance between consecutive GPS points
+              if (i > 0) {
+                const prevPoint = gpsPoints[i - 1];
+                const dist = getDistanceFromLatLon(
+                  prevPoint.latitude, prevPoint.longitude,
+                  point.latitude, point.longitude
+                );
+                if (dist < 1) totalDistance += dist; // Ignore jumps > 1km
+              }
             }
           }
 
-          // Calculate duration
-          const firstTime = new Date(gpsPoints[0].created_at);
-          const lastTime = new Date(gpsPoints[gpsPoints.length - 1].created_at);
+          // Calculate duration using ALL points (including GSM)
+          const firstTime = new Date(allPoints[0].created_at);
+          const lastTime = new Date(allPoints[allPoints.length - 1].created_at);
           const durationMins = Math.round((lastTime.getTime() - firstTime.getTime()) / 1000 / 60);
 
           summaries.push({
             date: day.date,
             displayDate: day.displayDate,
             dayName: day.dayName,
-            totalPoints: gpsPoints.length,
+            totalPoints: allPoints.length,
             totalDistance: Math.round(totalDistance * 100) / 100,
             maxSpeed: Math.round(maxSpeed),
             duration: durationMins,
