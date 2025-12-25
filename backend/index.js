@@ -66,22 +66,15 @@ async function getBestLatestPoint(deviceId, opts = {}) {
   const gpsTime = new Date(lastGps.created_at).getTime();
   const gsmTime = new Date(lastGsm.created_at).getTime();
   
-  // STRICTER GPS PRIORITY:
-  // Only prefer GPS if it is VERY fresh (within 1 minute)
-  // Otherwise, if GSM is newer, show GSM immediately.
-  const gpsAgeMinutes = (now - gpsTime) / 60000;
-  
-  if (gpsAgeMinutes <= 1 && gpsTime >= gsmTime) {
-    return { error: null, chosen: lastGps, decision: 'gps_fresh_priority' };
-  }
-  
-  // If GSM is newer (even by a second), use GSM
+  // ✅ SIMPLE RULE: Always show the NEWEST data (by timestamp)
+  // This ensures we show GSM when GPS is unavailable, and vice versa
   if (gsmTime > gpsTime) {
+    console.log(`[DECISION] GSM is newer (${Math.round((gsmTime - gpsTime)/1000)}s) -> Using GSM`);
     return { error: null, chosen: lastGsm, decision: 'gsm_newer' };
+  } else {
+    console.log(`[DECISION] GPS is newer (${Math.round((gpsTime - gsmTime)/1000)}s) -> Using GPS`);
+    return { error: null, chosen: lastGps, decision: 'gps_newer' };
   }
-  
-  // Fallback to GPS
-  return { error: null, chosen: lastGps, decision: 'gps_default' };
 }
 
 // --- 0. Register Token Endpoint ---
