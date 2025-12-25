@@ -21,8 +21,6 @@
 #include <HardwareSerial.h>
 #include <esp_task_wdt.h>
 #include <esp_arduino_version.h>
-#include <FS.h>
-#include <SPIFFS.h>
 
 // ============================================
 // CONFIGURATION
@@ -39,9 +37,9 @@ const String DEVICE_ID = "papaji_tractor_01";
 const int WDT_TIMEOUT = 120;
 
 // GPS Quality Thresholds
-const unsigned long GPS_MAX_AGE_MS = 5000;  // 5s max data age
-const int GPS_MIN_SATS = 4;                 // Minimum satellites
-const float GPS_MAX_HDOP = 5.0;             // Max HDOP value
+const unsigned long GPS_MAX_AGE_MS = 10000; // 10s max data age
+const int GPS_MIN_SATS = 3;                 // Minimum satellites
+const float GPS_MAX_HDOP = 20.0;            // Max HDOP (Tightened from 50 to 20 to reduce jumping)
 
 // Update Intervals
 const unsigned long MOVING_INTERVAL = 2000;   // 2s when moving
@@ -59,6 +57,7 @@ const unsigned long HARD_RESET_INTERVAL = 900000; // 15 mins
 #define GSM_TX 17
 #define GPS_RX 4
 #define GPS_TX 5
+#define LED_PIN 2  // Onboard LED for status
 
 // ============================================
 // GLOBAL OBJECTS
@@ -88,7 +87,6 @@ bool wasGpsLost = false;
 // Statistics
 unsigned long successfulSends = 0;
 unsigned long failedSends = 0;
-unsigned long offlineSaves = 0;
 
 // Batching
 const int BATCH_SIZE = 1;
@@ -108,8 +106,6 @@ void maintainNetwork();
 void bufferData(float lat, float lon, float speed, String source, int signal, float hdop, int sats, String timestamp);
 void flushBatch();
 bool sendRawJson(String jsonString);
-void saveOffline(String data);
-void processOfflineData();
 void checkSMS();
 void sendLocationSMS();
 void sendSMS(String number, String message);
@@ -122,13 +118,6 @@ void setup() {
   Serial.println("\n========================================");
   Serial.println("   PAPAJI GPS TRACKER - GPS ONLY MODE");
   Serial.println("========================================");
-
-  // Initialize SPIFFS
-  if (!SPIFFS.begin(true)) {
-    Serial.println("[ERROR] SPIFFS Mount Failed");
-  } else {
-    Serial.println("[OK] SPIFFS Mounted");
-  }
 
   // Watchdog Timer
   #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
@@ -145,7 +134,12 @@ void setup() {
   gpsSerial.setRxBufferSize(1024);
   gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
   gsmSerial.begin(9600, SERIAL_8N1, GSM_RX, GSM_TX);
-  Serial.println("[OK] Serial Ports Ready");
+  
+  // LED Setup
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW); // Start OFF
+  
+  Serial.println("[OK] Serial Ports & LED Ready");
 
   // Initialize Modem
   Serial.println("[...] Initializing modem...");
@@ -190,9 +184,61 @@ void loop() {
   // Get GPS status
   bool gpsValid = hasFreshGpsFix();
   
+  // LED Status Logic
+  // Fast Blink (100ms) = Searching for GPS
+  // Slow Blink (1000ms) = GPS Locked & Working
+  static unsigned long lastBlink = 0;
+  static bool ledState = false;
+  unsigned long blinkInterval = gpsValid ? 1000 : 100;
+  
+  if (millis() - lastBlink > blinkInterval) {
+    lastBlink = millis();
+    ledState = !ledState;
+    digitalWrite(LED_PIN, ledState);
+  }
+  
   if (!gpsValid) {
     wasGpsLost = true;
     currentInterval = STOPPED_INTERVAL;
+    
+    // Debug print for GPS searching
+    static unsigned long lastSearchPrint = 0;
+    if (millis() - lastSearchPrint > 5000) {
+      lastSearchPrint = millis();
+      Serial.printf("[GPS] Searching... Sats: %d | HDOP: %.1f\n", 
+        gps.satellites.isValid() ? gps.satellites.value() : 0,
+        gps.hdop.isValid() ? gps.hdop.hdop() : 99.0);
+    }
+
+    // GSM Fallback (LBS)
+    // If GPS is lost, try to get location from Cell Towers
+    if (millis() - lastSend > currentInterval) {
+      float gLat = 0, gLon = 0, gAcc = 0;
+      int gYear = 0, gMonth = 0, gDay = 0, gHour = 0, gMin = 0, gSec = 0;
+      
+      // Try to get GSM location
+      if (modem.getGsmLocation(&gLat, &gLon, &gAcc, &gYear, &gMonth, &gDay, &gHour, &gMin, &gSec)) {
+         // Fix: SIM800 sometimes returns Longitude first. Swap if needed for India.
+         if (gLat > 60.0 && gLon < 60.0) {
+            float temp = gLat;
+            gLat = gLon;
+            gLon = temp;
+         }
+
+         Serial.printf("[GSM] LBS Location: %.6f, %.6f | Acc: %.1f\n", gLat, gLon, gAcc);
+         
+         String ts = "";
+         if (gYear > 2000) {
+            char tsBuffer[25];
+            sprintf(tsBuffer, "%04d-%02d-%02dT%02d:%02d:%02dZ", gYear, gMonth, gDay, gHour, gMin, gSec);
+            ts = String(tsBuffer);
+         }
+         
+         bufferData(gLat, gLon, 0, "gsm", modem.getSignalQuality(), 99.0, 0, ts);
+         lastSend = millis();
+         lastActualSend = millis();
+      }
+    }
     
     // Heartbeat every 2 minutes
     if (millis() - lastActualSend > 120000) {
@@ -218,30 +264,18 @@ void loop() {
     dist = TinyGPSPlus::distanceBetween(lat, lon, lastLat, lastLon);
   }
 
-  // Smart jitter filter
-  static int moveCounter = 0;
-  static unsigned long lastMoveTime = 0;
-  
-  if (speed < 2.0 && dist < 10.0) {
-    // Stationary
-    moveCounter = 0;
+  // Smart jitter filter (Static Navigation)
+  // If speed is low and distance is small, we are likely just drifting.
+  // Lock coordinates to the last known good position.
+  if (speed < 5.0 && dist < 20.0) {
+    // Stationary - Clamp to last known position
     speed = 0;
-  } else if (speed > 3.0 || dist > 15.0) {
-    // Moving
-    moveCounter++;
-    lastMoveTime = millis();
+    if (lastLat != 0 && lastLon != 0) {
+      lat = lastLat;
+      lon = lastLon;
+    }
   }
   
-  // Reset counter after 30s of no movement
-  if (millis() - lastMoveTime > 30000) {
-    moveCounter = 0;
-  }
-  
-  // Additional speed clamp for very low speeds
-  if (speed < 1.5 && dist < 8.0) {
-    speed = 0;
-  }
-
   // Dynamic interval based on speed
   if (speed > 2.0) {
     currentInterval = MOVING_INTERVAL;
@@ -314,8 +348,8 @@ void loop() {
   static unsigned long lastStatus = 0;
   if (millis() - lastStatus > 30000) {
     lastStatus = millis();
-    Serial.printf("\n[STATUS] Sends: %lu OK, %lu FAIL, %lu OFFLINE | GPRS: %s | Signal: %d\n\n",
-                  successfulSends, failedSends, offlineSaves,
+    Serial.printf("\n[STATUS] Sends: %lu OK, %lu FAIL | GPRS: %s | Signal: %d\n\n",
+                  successfulSends, failedSends,
                   modem.isGprsConnected() ? "YES" : "NO",
                   modem.getSignalQuality());
   }
@@ -368,14 +402,13 @@ void flushBatch() {
     if (sendRawJson(jsonString)) {
       successfulSends++;
       batchArray.clear();
-      processOfflineData(); // Send offline backlog
     } else {
       failedSends++;
-      saveOffline(jsonString);
+      Serial.println("[NET] Send failed - Discarding data");
       batchArray.clear();
     }
   } else {
-    saveOffline(jsonString);
+    Serial.println("[NET] No connection - Discarding data");
     batchArray.clear();
   }
 }
@@ -433,58 +466,6 @@ bool sendRawJson(String jsonString) {
   }
 
   return ok;
-}
-
-// ============================================
-// OFFLINE STORAGE
-// ============================================
-void saveOffline(String data) {
-  File file = SPIFFS.open("/offline.txt", FILE_APPEND);
-  if (file) {
-    file.println(data);
-    file.close();
-    offlineSaves++;
-    Serial.println("[OFFLINE] Saved to flash");
-  } else {
-    Serial.println("[ERROR] Failed to save offline data");
-  }
-}
-
-void processOfflineData() {
-  if (!SPIFFS.exists("/offline.txt")) return;
-
-  Serial.println("[OFFLINE] Processing saved data...");
-  SPIFFS.rename("/offline.txt", "/processing.txt");
-
-  File file = SPIFFS.open("/processing.txt", FILE_READ);
-  if (!file) return;
-
-  int count = 0;
-  while (file.available()) {
-    String line = file.readStringUntil('\n');
-    line.trim();
-    if (line.length() > 0) {
-      if (!sendRawJson(line)) {
-        // Failed - restore to offline
-        File backup = SPIFFS.open("/offline.txt", FILE_APPEND);
-        if (backup) {
-          backup.println(line);
-          while (file.available()) backup.println(file.readStringUntil('\n'));
-          backup.close();
-        }
-        break;
-      }
-      count++;
-    }
-  }
-  file.close();
-
-  // Delete processed file
-  SPIFFS.remove("/processing.txt");
-
-  if (count > 0) {
-    Serial.printf("[OFFLINE] Uploaded & deleted %d saved points\n", count);
-  }
 }
 
 // ============================================

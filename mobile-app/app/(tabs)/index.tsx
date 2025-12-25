@@ -1,4 +1,4 @@
-import MapView, { Marker, Polyline } from '@/components/MapLib';
+import MapView, { Marker, Polyline, Circle } from '@/components/MapLib';
 import { useMapType } from '@/context/MapContext';
 import { useTheme } from '@/context/ThemeContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -32,6 +32,7 @@ export default function DashboardScreen() {
 
   const [tractorLocation, setTractorLocation] = useState({ latitude: 30.7333, longitude: 76.7794 });
   const [currentSpeed, setCurrentSpeed] = useState(0);
+  const [tractorHeading, setTractorHeading] = useState(0);
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
   const [hasCentered, setHasCentered] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -48,6 +49,19 @@ export default function DashboardScreen() {
     const interval = setInterval(loadData, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // Helper to calculate bearing between two points
+  const calculateBearing = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const toDeg = (rad: number) => (rad * 180) / Math.PI;
+    
+    const dLon = toRad(lon2 - lon1);
+    const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+    const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+              Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+    const brng = toDeg(Math.atan2(y, x));
+    return (brng + 360) % 360;
+  };
 
   const loadData = async () => {
     await Promise.all([loadStats(), loadMapData()]);
@@ -89,7 +103,16 @@ export default function DashboardScreen() {
       ]);
 
       // GPS ONLY MODE - ignore GSM data
+      // const gpsPoints = history?.gps || [];
+      // Allow GSM points if GPS is missing
       const gpsPoints = history?.gps || [];
+      const allPoints = [...gpsPoints];
+      
+      // If latest point is GSM, add it to display
+      if (latestPoint && (latestPoint as any).source === 'gsm') {
+         // We don't add GSM points to the route line (Polyline) to keep it clean
+         // But we use it for the current location marker
+      }
 
       // GPS points - connect with route line
       const route = gpsPoints.map((p: any) => ({
@@ -106,6 +129,18 @@ export default function DashboardScreen() {
           latitude: livePoint.latitude,
           longitude: livePoint.longitude,
         };
+
+        // Calculate heading if we have at least 2 points
+        if (gpsPoints.length >= 2) {
+          const last = gpsPoints[gpsPoints.length - 1];
+          const prev = gpsPoints[gpsPoints.length - 2];
+          // Only update heading if moving
+          const spd = (livePoint as any).speed_kmh || (livePoint as any).speed || 0;
+          if (spd > 2) {
+             const bearing = calculateBearing(prev.latitude, prev.longitude, last.latitude, last.longitude);
+             setTractorHeading(bearing);
+          }
+        }
 
         setTractorLocation(nextLocation);
         setCurrentSpeed((livePoint as any).speed_kmh || (livePoint as any).speed || 0);
@@ -278,25 +313,43 @@ export default function DashboardScreen() {
             />
           )}
 
+          {/* GSM Accuracy Circle - Only if source is GSM */}
+          {stats.source === 'gsm' && (
+            <Circle
+              center={tractorLocation}
+              radius={500} // Approx 500m accuracy for GSM
+              fillColor="rgba(239, 68, 68, 0.15)" // Red tint
+              strokeColor="rgba(239, 68, 68, 0.5)"
+              strokeWidth={1}
+            />
+          )}
+
           {/* Tractor Marker - Live Location */}
           <Marker 
             coordinate={tractorLocation}
             anchor={{ x: 0.5, y: 0.5 }}
+            rotation={tractorHeading}
+            flat={true}
           >
             <View 
-              className="items-center justify-center rounded-full border-4 border-white"
+              className="items-center justify-center rounded-full border-2 border-white"
               style={{ 
                 backgroundColor: getStatusColor(),
-                width: 50, 
-                height: 50,
+                width: 44, 
+                height: 44,
                 shadowColor: "#000",
-                shadowOffset: { width: 0, height: 3 },
-                shadowOpacity: 0.27,
-                shadowRadius: 4.65,
-                elevation: 6
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.25,
+                shadowRadius: 3.84,
+                elevation: 5
               }}
             >
-              <MaterialCommunityIcons name="tractor-variant" size={26} color="white" />
+              <MaterialCommunityIcons 
+                name="navigation" 
+                size={26} 
+                color="white" 
+                style={{ transform: [{ rotate: '-45deg' }] }} 
+              />
             </View>
           </Marker>
         </MapView>
@@ -423,9 +476,9 @@ export default function DashboardScreen() {
               <MaterialCommunityIcons name="speedometer" size={24} color="#22c55e" />
             </View>
             <Text className={`text-2xl font-bold ${isDark ? 'text-white' : 'text-gray-900'}`}>
-              {stats.max_speed}
+              {currentSpeed.toFixed(0)}
             </Text>
-            <Text className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>km/h max</Text>
+            <Text className={`text-xs ${isDark ? 'text-gray-500' : 'text-gray-500'}`}>km/h</Text>
           </View>
           </View>
 
