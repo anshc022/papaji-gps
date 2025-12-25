@@ -102,23 +102,16 @@ export default function DashboardScreen() {
         api.getLatest('papaji_tractor_01')
       ]);
 
-      // GPS ONLY MODE - ignore GSM data
-      // const gpsPoints = history?.gps || [];
-      // Allow GSM points if GPS is missing
       const gpsPoints = history?.gps || [];
-      const allPoints = [...gpsPoints];
       
-      // If latest point is GSM, add it to display
-      if (latestPoint && (latestPoint as any).source === 'gsm') {
-         // We don't add GSM points to the route line (Polyline) to keep it clean
-         // But we use it for the current location marker
-      }
-
-      // GPS points - connect with route line
-      const route = gpsPoints.map((p: any) => ({
-        latitude: p.latitude,
-        longitude: p.longitude
-      }));
+      // Filter only actual GPS points for the route line
+      // We don't want to connect GSM points with lines as they are jumpy
+      const route = gpsPoints
+        .filter((p: any) => p.source === 'gps')
+        .map((p: any) => ({
+          latitude: p.latitude,
+          longitude: p.longitude
+        }));
       setRouteCoordinates(route);
 
       // Set live tractor location from latest point
