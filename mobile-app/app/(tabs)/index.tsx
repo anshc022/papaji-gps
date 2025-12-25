@@ -89,29 +89,26 @@ export default function DashboardScreen() {
         api.getLatest('papaji_tractor_01')
       ]);
 
-      // Separate GPS and GSM points
-      if (history && history.length > 0) {
-        // GPS points - connect with route line
-        const gpsPoints = history.filter((p: any) => p.source === 'gps');
-        const route = gpsPoints.map((p: any) => ({
-          latitude: p.latitude,
-          longitude: p.longitude
-        }));
-        setRouteCoordinates(route);
+      // History now returns { gps: [], gsm: [] } - separate arrays
+      const gpsPoints = history?.gps || [];
+      const gsmPoints = history?.gsm || [];
 
-        // GSM points - show as separate markers (no line)
-        const gsmPoints = history.filter((p: any) => p.source === 'gsm');
-        setGsmMarkers(gsmPoints.map((p: any) => ({
-          latitude: p.latitude,
-          longitude: p.longitude
-        })));
-      } else {
-        setRouteCoordinates([]);
-        setGsmMarkers([]);
-      }
+      // GPS points - connect with route line
+      const route = gpsPoints.map((p: any) => ({
+        latitude: p.latitude,
+        longitude: p.longitude
+      }));
+      setRouteCoordinates(route);
+
+      // GSM points - show as separate markers (no line)
+      setGsmMarkers(gsmPoints.map((p: any) => ({
+        latitude: p.latitude,
+        longitude: p.longitude
+      })));
 
       // Set live tractor location from latest point
-      const livePoint = latestPoint || (history && history.length > 0 ? history[history.length - 1] : null);
+      const lastGpsPoint = gpsPoints.length > 0 ? gpsPoints[gpsPoints.length - 1] : null;
+      const livePoint = latestPoint || lastGpsPoint;
       if (livePoint) {
         const nextLocation = {
           latitude: livePoint.latitude,

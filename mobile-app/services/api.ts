@@ -29,6 +29,12 @@ export interface LocationPoint {
   created_at: string;
 }
 
+// Response from history endpoint - GPS and GSM are separate
+export interface HistoryResponse {
+  gps: LocationPoint[];
+  gsm: LocationPoint[];
+}
+
 export interface StopPoint {
   latitude: number;
   longitude: number;
@@ -134,10 +140,11 @@ export const api = {
    * Get location history for a specific date
    * @param deviceId Device identifier
    * @param date Date in YYYY-MM-DD format
+   * @returns Separate GPS and GSM point arrays
    */
-  async getHistoryByDate(deviceId: string, date: string): Promise<LocationPoint[]> {
-    const data = await request<LocationPoint[]>(`/api/history?device_id=${deviceId}&date=${date}`);
-    return data || [];
+  async getHistoryByDate(deviceId: string, date: string): Promise<HistoryResponse> {
+    const data = await request<HistoryResponse>(`/api/history?device_id=${deviceId}&date=${date}`);
+    return data || { gps: [], gsm: [] };
   },
 
   /**

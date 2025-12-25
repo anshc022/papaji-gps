@@ -266,16 +266,11 @@ app.get('/api/history', async (req, res) => {
 
   if (gsmError) return res.status(500).json({ error: gsmError.message });
 
-  // Combine and Tag
-  const combined = [
-      ...(gpsData || []).map(p => ({ ...p, source: 'gps' })),
-      ...(gsmData || []).map(p => ({ ...p, source: 'gsm' }))
-  ];
-
-  // Sort by time
-  combined.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-  res.json(combined);
+  // Return GPS and GSM as separate arrays
+  res.json({
+    gps: (gpsData || []).map(p => ({ ...p, source: 'gps' })),
+    gsm: (gsmData || []).map(p => ({ ...p, source: 'gsm' }))
+  });
 });
 
 // --- 3. Stats Endpoint (For App) ---

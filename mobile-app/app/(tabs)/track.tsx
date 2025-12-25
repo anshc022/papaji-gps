@@ -177,15 +177,17 @@ export default function TrackScreen() {
         api.getLatest('papaji_tractor_01')
       ]);
 
-      if (history && history.length > 0) {
-        const gpsPoints = history.filter((p: any) => p.source === 'gps');
-        const gsmPoints = history.filter((p: any) => p.source === 'gsm');
-        
+      // History now returns { gps: [], gsm: [] } - separate arrays
+      const gpsPoints = history?.gps || [];
+      const gsmPoints = history?.gsm || [];
+      const totalPoints = gpsPoints.length + gsmPoints.length;
+
+      if (totalPoints > 0) {
         // GPS points for route line only (no GSM in route)
         let route = gpsPoints.map((p: any) => ({
           latitude: p.latitude,
           longitude: p.longitude,
-          speed: p.speed_kmh || 0,
+          speed: p.speed_kmh || p.speed || 0,
           source: p.source
         }));
 
@@ -200,7 +202,7 @@ export default function TrackScreen() {
           route = smoothRoute(route);
         }
 
-        const lastPoint = route[route.length - 1];
+        const lastPoint = route.length > 0 ? route[route.length - 1] : null;
         const displayPoint = latest?.latitude 
           ? { latitude: latest.latitude, longitude: latest.longitude }
           : lastPoint || { latitude: 30.7333, longitude: 76.7794 };
@@ -212,7 +214,7 @@ export default function TrackScreen() {
           maxSpeed: parseFloat(stats?.max_speed || '0'),
           avgSpeed: parseFloat(stats?.avg_speed || '0'),
           duration: parseFloat(stats?.active_time_hours || '0') * 60,
-          dataPoints: history.length,
+          dataPoints: totalPoints,
           gpsPoints: gpsPoints.length,
           gsmPoints: gsmPoints.length,
           location: displayPoint
@@ -241,7 +243,7 @@ export default function TrackScreen() {
           dataPoints: 0,
           gpsPoints: 0,
           gsmPoints: 0,
-          location: { latitude: 30.7333, longitude: 76.7794 } // Default or keep last known?
+          location: { latitude: 30.7333, longitude: 76.7794 }
         });
         setPlaybackIndex(0);
       }
