@@ -33,7 +33,6 @@ export default function DashboardScreen() {
   const [tractorLocation, setTractorLocation] = useState({ latitude: 30.7333, longitude: 76.7794 });
   const [currentSpeed, setCurrentSpeed] = useState(0);
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
-  const [gsmMarkers, setGsmMarkers] = useState<any[]>([]); // GSM points as separate markers
   const [hasCentered, setHasCentered] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -89,9 +88,8 @@ export default function DashboardScreen() {
         api.getLatest('papaji_tractor_01')
       ]);
 
-      // History now returns { gps: [], gsm: [] } - separate arrays
+      // GPS ONLY MODE - ignore GSM data
       const gpsPoints = history?.gps || [];
-      const gsmPoints = history?.gsm || [];
 
       // GPS points - connect with route line
       const route = gpsPoints.map((p: any) => ({
@@ -99,12 +97,6 @@ export default function DashboardScreen() {
         longitude: p.longitude
       }));
       setRouteCoordinates(route);
-
-      // GSM points - show as separate markers (no line)
-      setGsmMarkers(gsmPoints.map((p: any) => ({
-        latitude: p.latitude,
-        longitude: p.longitude
-      })));
 
       // Set live tractor location from latest point
       const lastGpsPoint = gpsPoints.length > 0 ? gpsPoints[gpsPoints.length - 1] : null;
@@ -286,26 +278,6 @@ export default function DashboardScreen() {
             />
           )}
 
-          {/* GSM Location Circles (not connected) */}
-          {gsmMarkers.map((marker, index) => (
-            <Marker
-              key={`gsm-${index}`}
-              coordinate={marker}
-              anchor={{ x: 0.5, y: 0.5 }}
-            >
-              <View
-                style={{
-                  width: 16,
-                  height: 16,
-                  borderRadius: 8,
-                  backgroundColor: '#f59e0b',
-                  borderWidth: 2,
-                  borderColor: 'white',
-                }}
-              />
-            </Marker>
-          ))}
-
           {/* Tractor Marker - Live Location */}
           <Marker 
             coordinate={tractorLocation}
@@ -345,9 +317,9 @@ export default function DashboardScreen() {
                     {stats.status}
                   </Text>
                   {stats.source && (
-                    <View className={`px-1.5 py-0.5 rounded ${stats.source === 'gps' ? 'bg-green-500/20' : 'bg-amber-500/20'}`}>
-                      <Text className={`text-[10px] font-medium ${stats.source === 'gps' ? 'text-green-600' : 'text-amber-600'}`}>
-                        {stats.source.toUpperCase()}
+                    <View className={`px-1.5 py-0.5 rounded ${stats.source === 'gps' ? 'bg-green-500/20' : 'bg-red-500/20'}`}>
+                      <Text className={`text-[10px] font-medium ${stats.source === 'gps' ? 'text-green-600' : 'text-red-600'}`}>
+                        {stats.source === 'gps' ? 'GPS' : 'NO GPS'}
                       </Text>
                     </View>
                   )}

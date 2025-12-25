@@ -50,14 +50,11 @@ export default function TrackScreen() {
   // Track Data State
   const [trackData, setTrackData] = useState<any>({
     route: [],
-    gsmMarkers: [], // GSM points as separate markers
     totalDistance: 0,
     maxSpeed: 0,
     avgSpeed: 0,
     duration: 0,
     dataPoints: 0,
-    gpsPoints: 0,
-    gsmPoints: 0,
     location: { latitude: 30.7333, longitude: 76.7794 }
   });
 
@@ -122,24 +119,17 @@ export default function TrackScreen() {
         api.getLatest('papaji_tractor_01')
       ]);
 
-      // History now returns { gps: [], gsm: [] } - separate arrays
+      // GPS ONLY MODE - ignore GSM data
       const gpsPoints = history?.gps || [];
-      const gsmPoints = history?.gsm || [];
-      const totalPoints = gpsPoints.length + gsmPoints.length;
+      const totalPoints = gpsPoints.length;
 
       if (totalPoints > 0) {
-        // GPS points for route line only (no GSM in route)
+        // GPS points for route line
         let route = gpsPoints.map((p: any) => ({
           latitude: p.latitude,
           longitude: p.longitude,
           speed: p.speed_kmh || p.speed || 0,
           source: p.source
-        }));
-
-        // GSM points as separate markers (circles, not connected)
-        const gsmMarkers = gsmPoints.map((p: any) => ({
-          latitude: p.latitude,
-          longitude: p.longitude
         }));
 
         const lastPoint = route.length > 0 ? route[route.length - 1] : null;
@@ -149,14 +139,11 @@ export default function TrackScreen() {
 
         setTrackData({
           route,
-          gsmMarkers,
           totalDistance: parseFloat(stats?.total_distance_km || '0'),
           maxSpeed: parseFloat(stats?.max_speed || '0'),
           avgSpeed: parseFloat(stats?.avg_speed || '0'),
           duration: parseFloat(stats?.active_time_hours || '0') * 60,
           dataPoints: totalPoints,
-          gpsPoints: gpsPoints.length,
-          gsmPoints: gsmPoints.length,
           location: displayPoint
         });
 
@@ -175,14 +162,11 @@ export default function TrackScreen() {
         // No data for this date - Clear the map
         setTrackData({
           route: [],
-          gsmMarkers: [],
           totalDistance: 0,
           maxSpeed: 0,
           avgSpeed: 0,
           duration: 0,
           dataPoints: 0,
-          gpsPoints: 0,
-          gsmPoints: 0,
           location: { latitude: 30.7333, longitude: 76.7794 }
         });
         setPlaybackIndex(0);
@@ -325,26 +309,6 @@ export default function TrackScreen() {
             <View className="bg-green-500 w-4 h-4 rounded-full border-2 border-white" />
           </Marker>
         )}
-
-        {/* GSM Location Circles (not connected with lines) */}
-        {trackData.gsmMarkers && trackData.gsmMarkers.map((marker: any, index: number) => (
-          <Marker
-            key={`gsm-${index}`}
-            coordinate={marker}
-            anchor={{ x: 0.5, y: 0.5 }}
-          >
-            <View
-              style={{
-                width: 16,
-                height: 16,
-                borderRadius: 8,
-                backgroundColor: '#f59e0b',
-                borderWidth: 2,
-                borderColor: 'white',
-              }}
-            />
-          </Marker>
-        ))}
       </MapView>
 
       {/* Top Status Bar */}
@@ -362,18 +326,14 @@ export default function TrackScreen() {
               </Text>
             </View>
 
-            {/* Data Points */}
+            {/* GPS Data Points */}
             <View 
               className="flex-row items-center px-3 py-2 rounded-xl"
               style={{ backgroundColor: isDark ? 'rgba(26,26,26,0.95)' : 'rgba(255,255,255,0.95)' }}
             >
               <MaterialCommunityIcons name="map-marker-path" size={16} color="#22c55e" />
               <Text className={`text-xs ml-1 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                {trackData.gpsPoints}
-              </Text>
-              <MaterialCommunityIcons name="antenna" size={16} color="#f59e0b" style={{ marginLeft: 8 }} />
-              <Text className={`text-xs ml-1 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                {trackData.gsmPoints}
+                {trackData.dataPoints} GPS
               </Text>
             </View>
           </Animated.View>

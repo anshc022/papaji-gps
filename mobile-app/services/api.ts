@@ -21,7 +21,7 @@ export interface LocationPoint {
   latitude: number;
   longitude: number;
   speed_kmh: number;
-  source: 'gps' | 'gsm';
+  source: 'gps' | 'none'; // 'none' when no GPS available
   signal?: number;
   hdop?: number;
   satellites?: number;
@@ -29,10 +29,10 @@ export interface LocationPoint {
   created_at: string;
 }
 
-// Response from history endpoint - GPS and GSM are separate
+// Response from history endpoint - GPS ONLY MODE (gsm kept for backward compatibility)
 export interface HistoryResponse {
   gps: LocationPoint[];
-  gsm: LocationPoint[];
+  gsm?: LocationPoint[]; // Ignored, GPS only
 }
 
 export interface StopPoint {

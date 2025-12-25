@@ -1,0 +1,656 @@
+/*
+ * Papaji GPS Tracker Firmware - MOVEMENT FIX
+ * Board: ESP32 Dev Module
+ * Modules: NEO-6M GPS, SIM800L GSM
+ * 
+ * FIXES:
+ * 1. ✅ FIXED: No more position jumping/snapping
+ * 2. ✅ FIXED: Smooth movement tracking
+ * 3. ✅ FIXED: Better jitter filter that doesn't overwrite real GPS
+ * 4. Drift filter uses time-based reset
+ * 5. Better debug output for troubleshooting
+ */
+
+#define TINY_GSM_MODEM_SIM800
+#include <TinyGsmClient.h>
+#include <TinyGPS++.h>
+#include <ArduinoJson.h>
+#include <HardwareSerial.h>
+#include <esp_task_wdt.h>
+#include <esp_arduino_version.h>
+#include <FS.h>
+#include <SPIFFS.h>
+
+// --- CONFIGURATION ---
+const char apn[]      = "airtelgprs.com"; 
+const char gprsUser[] = "";
+const char gprsPass[] = "";
+
+const char server[]   = "3.27.84.253"; 
+const int  port       = 3000;
+const char resource[] = "/api/telemetry";
+
+const String DEVICE_ID = "papaji_tractor_01";
+const int WDT_TIMEOUT = 120; 
+
+// --- Network Config ---
+unsigned long lastReconnectAttempt = 0;
+const unsigned long RECONNECT_INTERVAL = 10000;
+unsigned long lastConnectionSuccess = 0;
+const unsigned long HARD_RESET_INTERVAL = 900000; // 15 Minutes
+
+// --- PINS ---
+#define GSM_RX 16 
+#define GSM_TX 17 
+#define GPS_RX 4 
+#define GPS_TX 5 
+
+// --- OBJECTS ---
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(1); 
+HardwareSerial gsmSerial(2); 
+
+TinyGsm modem(gsmSerial);
+TinyGsmClient client(modem);
+
+unsigned long lastSend = 0;
+unsigned long lastActualSend = 0;
+unsigned long currentInterval = 5000;
+unsigned long lastSMSCheck = 0;
+const unsigned long SMS_CHECK_INTERVAL = 10000;
+
+// Drift Filter & Cornering
+double lastHeading = 0;
+double lastLat = 0; 
+double lastLon = 0;
+
+// GPS Restored Detection
+bool wasGpsLost = false;
+
+// Batching
+const int BATCH_SIZE = 1; 
+DynamicJsonDocument batchDoc(8192);
+JsonArray batchArray = batchDoc.to<JsonArray>();
+
+// Forward Declarations
+void connectToNetwork();
+void maintainNetwork();
+void sendSMS(String number, String message);
+void bufferData(float lat, float lon, float speed, String source, int signal, float hdop, int sats, String timestamp);
+void flushBatch();
+bool sendRawJson(String jsonString);
+void saveOffline(String data);
+void processOfflineData();
+void checkSMS();
+void sendLocationSMS();
+
+// SMS Config
+const char* OWNER_PHONE_1 = "+919939630600";
+const char* OWNER_PHONE_2 = "+917903636910";
+
+// GPS Quality / Freshness - GPS ONLY MODE
+const unsigned long GPS_MAX_AGE_MS = 5000; // 5 seconds freshness
+const int GPS_MIN_SATS = 4; // 4 satellites minimum
+const float GPS_MAX_HDOP = 5.0; // Accept reasonable GPS quality
+
+// Counters for debugging
+unsigned long successfulSends = 0;
+unsigned long failedSends = 0;
+unsigned long offlineSaves = 0;
+
+bool hasFreshGpsFix();
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("\n========================================");
+  Serial.println("   PAPAJI GPS TRACKER - Starting...");
+  Serial.println("========================================");
+
+  if(!SPIFFS.begin(true)){
+    Serial.println("[ERROR] SPIFFS Mount Failed");
+  } else {
+    Serial.println("[OK] SPIFFS Mounted");
+  }
+
+  // Watchdog
+  #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    esp_task_wdt_deinit();
+    esp_task_wdt_config_t wdt_config = { .timeout_ms = WDT_TIMEOUT * 1000, .trigger_panic = true };
+    esp_task_wdt_init(&wdt_config);
+  #else
+    esp_task_wdt_init(WDT_TIMEOUT, true);
+  #endif
+  esp_task_wdt_add(NULL);
+  Serial.println("[OK] Watchdog Initialized");
+
+  gpsSerial.setRxBufferSize(1024);
+  gpsSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
+  gsmSerial.begin(9600, SERIAL_8N1, GSM_RX, GSM_TX);
+  Serial.println("[OK] Serial Ports Initialized");
+
+  Serial.println("[...] Initializing modem...");
+  esp_task_wdt_reset();
+  
+  // Power stabilization delay for SIM800L
+  Serial.println("[...] Waiting for modem power stabilization...");
+  delay(3000);
+  
+  modem.restart();
+  delay(3000);
+  
+  // Test modem communication first
+  Serial.print("[NET] Testing modem communication... ");
+  if (modem.testAT()) {
+    Serial.println("OK");
+  } else {
+    Serial.println("FAIL - Check power supply!");
+  }
+  
+  connectToNetwork();
+  
+  Serial.println("[OK] Setup Complete. Starting main loop...\n");
+  delay(2000); 
+}
+
+void connectToNetwork() {
+  esp_task_wdt_reset();
+  
+  Serial.print("[NET] Waiting for network...");
+  if (!modem.waitForNetwork(30000L)) {
+    Serial.println(" FAIL");
+  } else {
+    Serial.println(" OK");
+  }
+
+  int sig = modem.getSignalQuality();
+  Serial.printf("[NET] Signal Quality: %d/31\n", sig);
+  
+  if (sig == 0 && !modem.isNetworkConnected()) {
+    Serial.println("[NET] No signal! Check antenna.");
+    return;
+  }
+
+  Serial.print("[NET] Connecting to APN: ");
+  if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
+    Serial.println("FAIL");
+  } else {
+    Serial.println("SUCCESS");
+    lastConnectionSuccess = millis();
+  }
+}
+
+void loop() {
+  esp_task_wdt_reset();
+
+  // Read GPS data continuously
+  while (gpsSerial.available() > 0) {
+    gps.encode(gpsSerial.read());
+  }
+
+  // Network Maintenance
+  maintainNetwork();
+
+  // Check for incoming SMS
+  if (millis() - lastSMSCheck > SMS_CHECK_INTERVAL) {
+    checkSMS();
+    lastSMSCheck = millis();
+  }
+
+  // Get GPS Data
+  bool gpsValid = hasFreshGpsFix();
+  float lat = gps.location.lat();
+  float lon = gps.location.lng();
+  float speed = gps.speed.kmph();
+  float heading = gps.course.deg();
+  
+  // --- IMPROVED JITTER FILTER (NO MORE POSITION SNAPPING!) ---
+  static int moveCounter = 0;
+  static unsigned long lastMoveTime = 0;
+  double rawDist = 0;
+  
+  if (lastLat != 0 && lastLon != 0) {
+      rawDist = TinyGPSPlus::distanceBetween(lat, lon, lastLat, lastLon);
+  }
+  
+  // Smart filtering: Only zero speed if truly stationary
+  if (gpsValid) {
+      if (speed < 2.0 && rawDist < 10.0) {
+          // Tractor is stationary - zero the speed but keep position
+          moveCounter = 0;
+          speed = 0;
+      } else if (speed > 3.0 || rawDist > 15.0) {
+          // Tractor is moving - increment counter
+          moveCounter++;
+          lastMoveTime = millis();
+      }
+      
+      // Reset counter if no movement detected for 30 seconds
+      if (millis() - lastMoveTime > 30000) {
+          moveCounter = 0;
+      }
+      
+      // Additional speed clamp for very low speeds
+      if (speed < 1.5 && rawDist < 8.0) {
+          speed = 0;
+      }
+  }
+  // --- END IMPROVED FILTER ---
+
+  // Calculate distance from last sent point
+  double dist = 0;
+  if (gpsValid && lastLat != 0 && lastLon != 0) {
+      dist = TinyGPSPlus::distanceBetween(lat, lon, lastLat, lastLon);
+  }
+
+  // Determine Update Interval (HIGH PERFORMANCE MODE)
+  if (gpsValid) {
+      if (speed > 2.0) currentInterval = 2000; // Moving: 2s (Real-time)
+      else currentInterval = 60000;            // Stopped: 1 min
+  } else {
+      currentInterval = 60000;                 // No Fix: 1 min
+  }
+
+  // Check Triggers
+  bool timeTrigger = (millis() - lastSend > currentInterval) || (lastSend == 0);
+  bool distTrigger = false;
+  bool gpsRestoredTrigger = false;
+  bool cornerTrigger = false;
+  
+  // GPS RESTORED TRIGGER
+  if (gpsValid && wasGpsLost) {
+    gpsRestoredTrigger = true;
+    wasGpsLost = false;
+    Serial.println("[GPS] *** GPS RESTORED! Sending immediately ***");
+  }
+  
+  if (!gpsValid) {
+    wasGpsLost = true;
+  }
+
+  if (gpsValid) {
+      // Distance trigger
+      if (speed > 3.0 && dist > 15.0) distTrigger = true; 
+      else if (dist > 25.0) distTrigger = true;
+      
+      // Corner detection
+      double headDiff = abs(heading - lastHeading);
+      if (headDiff > 180) headDiff = 360 - headDiff;
+      if (speed > 5.0 && headDiff > 30.0 && millis() - lastSend > 2000) {
+          cornerTrigger = true;
+      }
+  }
+
+  // DUPLICATE FILTER
+  bool forceHeartbeat = (millis() - lastActualSend > 120000); // 2 mins
+
+  if (timeTrigger && !distTrigger && !cornerTrigger && !gpsRestoredTrigger && !forceHeartbeat && gpsValid && dist < 15.0 && lastSend != 0) {
+      lastSend = millis();
+      return;
+  }
+
+  // Send Data
+  if (timeTrigger || distTrigger || cornerTrigger || gpsRestoredTrigger) {
+    float finalLat = 0, finalLon = 0, finalSpeed = 0;
+    float hdop = 99.0;
+    int satellites = 0;
+    String source = "none";
+    int signalQuality = modem.getSignalQuality();
+
+    if (gpsValid) {
+      finalLat = lat;
+      finalLon = lon;
+      finalSpeed = speed;
+      source = "gps";
+      
+      if (gps.hdop.isValid()) hdop = gps.hdop.hdop();
+      if (gps.satellites.isValid()) satellites = gps.satellites.value();
+      
+      // Update last knowns
+      lastLat = lat;
+      lastLon = lon;
+      lastHeading = heading;
+
+      Serial.printf("[GPS] FIX: %.6f, %.6f | Speed: %.1f km/h | Dist: %.1fm | HDOP: %.1f | Sats: %d\n", 
+                    finalLat, finalLon, finalSpeed, dist, hdop, satellites);
+    } else {
+      // No GPS - Send heartbeat only
+      Serial.println("[GPS] No fix. Waiting for GPS lock...");
+    }
+
+    // Send or Buffer Data
+    if (source != "none") {
+      String ts = "";
+      if (gpsValid && gps.date.isValid() && gps.time.isValid()) {
+         char tsBuffer[25];
+         sprintf(tsBuffer, "%04d-%02d-%02dT%02d:%02d:%02dZ", 
+                 gps.date.year(), gps.date.month(), gps.date.day(),
+                 gps.time.hour(), gps.time.minute(), gps.time.second());
+         ts = String(tsBuffer);
+      }
+      bufferData(finalLat, finalLon, finalSpeed, source, signalQuality, hdop, satellites, ts);
+    } else {
+      Serial.println("[SYS] Sending heartbeat...");
+      bufferData(0, 0, 0, "heartbeat", signalQuality, 99.0, 0, "");
+    }
+    
+    lastSend = millis();
+    lastActualSend = millis();
+  }
+
+  // Print status every 30 seconds
+  static unsigned long lastStatus = 0;
+  if (millis() - lastStatus > 30000) {
+    lastStatus = millis();
+    Serial.printf("\n[STATUS] Sends: %lu OK, %lu FAIL, %lu OFFLINE | GPRS: %s | Signal: %d | SIM: %d\n\n",
+                  successfulSends, failedSends, offlineSaves,
+                  modem.isGprsConnected() ? "YES" : "NO",
+                  modem.getSignalQuality(),
+                  modem.getSimStatus());
+  }
+}
+
+void saveOffline(String data) {
+  File file = SPIFFS.open("/offline.txt", FILE_APPEND);
+  if(file){
+    file.println(data);
+    file.close();
+    offlineSaves++;
+    Serial.println("[OFFLINE] Data saved to flash memory");
+  } else {
+    Serial.println("[ERROR] Failed to save offline data");
+  }
+}
+
+bool sendRawJson(String jsonString) {
+  if (!client.connected()) {
+    Serial.println("[NET] Connecting to server...");
+    if (!client.connect(server, port)) {
+      Serial.println("[NET] Server connect FAILED");
+      modem.gprsDisconnect();
+      return false;
+    }
+  } else {
+    Serial.println("[NET] Reusing existing connection");
+  }
+
+  lastConnectionSuccess = millis();
+  
+  client.print(String("POST ") + resource + " HTTP/1.1\r\n");
+  client.print(String("Host: ") + server + "\r\n");
+  client.println("Connection: keep-alive");
+  client.println("Content-Type: application/json");
+  client.print("Content-Length: ");
+  client.println(jsonString.length());
+  client.println();
+  client.println(jsonString);
+  
+  bool ok = false;
+  unsigned long timeout = millis();
+  
+  while(client.connected() && millis() - timeout < 7000) {
+    if(client.available()) {
+      String line = client.readStringUntil('\n');
+      if(line == "\r") break;
+    }
+  }
+  
+  if(client.connected()) {
+    String line = client.readStringUntil('\n');
+    if (line.indexOf("ok") != -1 || line.indexOf("200") != -1) {
+      ok = true;
+      Serial.println("[NET] Data sent SUCCESS");
+    }
+    if (line.indexOf("reset") != -1) {
+       Serial.println("[CMD] Server requested RESET!");
+       delay(1000);
+       ESP.restart();
+    }
+    if (line.indexOf("reconnect") != -1) {
+       Serial.println("[CMD] Server requested RECONNECT!");
+       client.stop();
+       modem.gprsDisconnect();
+    }
+  }
+  
+  return ok;
+}
+
+bool hasFreshGpsFix() {
+  // STRICT GPS VALIDATION - No stale data allowed!
+  if (!gps.location.isValid()) return false;
+  
+  // CRITICAL: GPS data must be VERY fresh (< 5 seconds)
+  if (gps.location.age() > GPS_MAX_AGE_MS) return false;
+  
+  // CRITICAL: Must have satellites RIGHT NOW (not cached data)
+  if (!gps.satellites.isValid()) return false;
+  int currentSats = gps.satellites.value();
+  if (currentSats < GPS_MIN_SATS) return false;
+  
+  // Check satellite data freshness too
+  if (gps.satellites.age() > GPS_MAX_AGE_MS) return false;
+  
+  // HDOP check (signal quality)
+  if (gps.hdop.isValid() && gps.hdop.hdop() > GPS_MAX_HDOP) return false;
+  
+  return true;
+}
+
+void processOfflineData() {
+  if (!SPIFFS.exists("/offline.txt")) return;
+  
+  Serial.println("[OFFLINE] Processing saved data...");
+  SPIFFS.rename("/offline.txt", "/processing.txt");
+  
+  File file = SPIFFS.open("/processing.txt", FILE_READ);
+  if (!file) return;
+
+  int count = 0;
+  while (file.available()) {
+    String line = file.readStringUntil('\n');
+    line.trim();
+    if (line.length() > 0) {
+      if (!sendRawJson(line)) {
+        File backup = SPIFFS.open("/offline.txt", FILE_APPEND);
+        if (backup) {
+            backup.println(line); 
+            while(file.available()) backup.println(file.readStringUntil('\n'));
+            backup.close();
+        }
+        break; 
+      }
+      count++;
+    }
+  }
+  file.close();
+  
+  // ✅ DELETE processed file after successful upload
+  SPIFFS.remove("/processing.txt");
+  
+  if (count > 0) {
+    Serial.printf("[OFFLINE] ✅ Uploaded & DELETED %d saved points from ESP32\n", count);
+  }
+}
+
+void bufferData(float lat, float lon, float speed, String source, int signal, float hdop, int sats, String timestamp) {
+  JsonObject obj = batchArray.createNestedObject();
+  obj["device_id"] = DEVICE_ID;
+  obj["latitude"] = lat;
+  obj["longitude"] = lon;
+  obj["speed_kmh"] = speed;
+  obj["source"] = source.c_str(); 
+  obj["signal"] = signal;
+  obj["hdop"] = hdop;
+  obj["satellites"] = sats;
+  obj["battery_voltage"] = 4.0; 
+  if (timestamp != "") obj["timestamp"] = timestamp.c_str();
+
+  // ✅ DEBUG: Show exactly what we're sending
+  Serial.printf("[BUFFER] Source='%s' | Lat=%.6f | Lon=%.6f | Speed=%.1f\n", 
+                source.c_str(), lat, lon, speed);
+
+  if (batchArray.size() >= BATCH_SIZE) flushBatch();
+}
+
+void flushBatch() {
+  if (batchArray.size() == 0) return;
+
+  String jsonString;
+  serializeJson(batchArray, jsonString);
+
+  if (modem.isGprsConnected()) {
+    if (sendRawJson(jsonString)) {
+      successfulSends++;
+      batchArray.clear(); 
+      
+      // ✅ After successful online send, process and DELETE offline backlog
+      processOfflineData(); 
+    } else {
+      failedSends++;
+      saveOffline(jsonString);
+      batchArray.clear();
+    }
+  } else {
+    saveOffline(jsonString);
+    batchArray.clear();
+  }
+}
+
+// ============ SMS FUNCTIONS ============
+
+void checkSMS() {
+  String response = "";
+  modem.sendAT("+CMGF=1");
+  modem.waitResponse();
+  
+  modem.sendAT("+CMGL=\"REC UNREAD\"");
+  if (modem.waitResponse(10000L, response) == 1) {
+    if (response.indexOf("+CMGL:") != -1) {
+       Serial.println("[SMS] Message received!");
+       
+       // Forward to Server
+       DynamicJsonDocument doc(4096);
+       doc["device_id"] = DEVICE_ID;
+       doc["raw_response"] = response;
+       
+       String json;
+       serializeJson(doc, json);
+       
+       if (client.connect(server, port)) {
+          client.print(String("POST /api/sms/incoming HTTP/1.1\r\n"));
+          client.print(String("Host: ") + server + "\r\n");
+          client.println("Connection: close");
+          client.println("Content-Type: application/json");
+          client.print("Content-Length: ");
+          client.println(json.length());
+          client.println();
+          client.println(json);
+          
+          unsigned long timeout = millis();
+          while(client.connected() && millis() - timeout < 2000) {
+            if(client.available()) client.read();
+          }
+          client.stop();
+          Serial.println("[SMS] Forwarded to server");
+       }
+
+       // Handle Commands
+       response.toLowerCase();
+       if (response.indexOf("loc") != -1) {
+          Serial.println("[SMS] 'loc' command received!");
+          sendLocationSMS();
+       } else if (response.indexOf("reset") != -1) {
+          Serial.println("[SMS] 'reset' command received!");
+          sendSMS(OWNER_PHONE_1, "Papaji Tractor: Resetting device...");
+          delay(2000);
+          ESP.restart();
+       } else if (response.indexOf("status") != -1) {
+          Serial.println("[SMS] 'status' command received!");
+          String statusMsg = "Papaji Tractor Status:\n";
+          statusMsg += "GPRS: " + String(modem.isGprsConnected() ? "Connected" : "Disconnected") + "\n";
+          statusMsg += "Signal: " + String(modem.getSignalQuality()) + "/31\n";
+          statusMsg += "GPS Fix: " + String(hasFreshGpsFix() ? "Yes" : "No") + "\n";
+          statusMsg += "Uptime: " + String(millis() / 60000) + " mins";
+          sendSMS(OWNER_PHONE_1, statusMsg);
+       }
+       
+       modem.sendAT("+CMGDA=\"DEL ALL\"");
+       modem.waitResponse();
+    }
+  }
+}
+
+void sendLocationSMS() {
+  String message;
+  
+  if (hasFreshGpsFix()) {
+    float lat = gps.location.lat();
+    float lon = gps.location.lng();
+    float spd = gps.speed.kmph();
+    int sats = gps.satellites.isValid() ? gps.satellites.value() : 0;
+    float hdopVal = gps.hdop.isValid() ? gps.hdop.hdop() : 99.0;
+    
+    message = "Papaji Tractor GPS:\n";
+    message += "https://maps.google.com/?q=" + String(lat, 6) + "," + String(lon, 6) + "\n";
+    message += "Speed: " + String(spd, 1) + " km/h\n";
+    message += "Sats: " + String(sats) + " | ";
+    if (hdopVal < 2) message += "Accuracy: Good";
+    else if (hdopVal < 5) message += "Accuracy: OK";
+    else message += "Accuracy: Poor";
+    
+  } else {
+    message = "Papaji Tractor:\nGPS signal not available. Please try again when outdoors.";
+  }
+  
+  Serial.println("[SMS] Sending location to both numbers...");
+  sendSMS(OWNER_PHONE_1, message);
+  delay(2000); 
+  sendSMS(OWNER_PHONE_2, message);
+  Serial.println("[SMS] Location sent!");
+}
+
+// ============ NETWORK FUNCTIONS ============
+
+void maintainNetwork() {
+  if (millis() - lastConnectionSuccess > HARD_RESET_INTERVAL) {
+    Serial.println("[NET] No server contact for 15+ mins. Restarting...");
+    delay(1000);
+    ESP.restart();
+  }
+
+  if (modem.isGprsConnected()) {
+    return;
+  }
+
+  if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL) {
+    lastReconnectAttempt = millis();
+    Serial.println("[NET] Reconnecting...");
+    
+    if (!modem.isNetworkConnected()) {
+       Serial.print("[NET] Waiting for network... ");
+       if (!modem.waitForNetwork(10000L)) {
+         Serial.print("Fail. Reg Status: ");
+         Serial.println(modem.getRegistrationStatus());
+       } else {
+         Serial.println("OK");
+       }
+    }
+    
+    if (modem.isNetworkConnected()) {
+       if (modem.gprsConnect(apn, gprsUser, gprsPass)) {
+          Serial.println("[NET] GPRS Reconnected");
+       }
+    }
+  }
+}
+
+void sendSMS(String number, String message) {
+  modem.sendAT("+CMGF=1"); 
+  modem.waitResponse();
+  modem.sendAT("+CMGS=\"" + number + "\"");
+  if (modem.waitResponse(5000L, ">") == 1) {
+    modem.stream.print(message);
+    modem.stream.write(0x1A);
+    modem.waitResponse(10000L);
+  }
+}

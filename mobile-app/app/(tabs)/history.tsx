@@ -14,8 +14,6 @@ interface DaySummary {
   totalDistance: number;
   maxSpeed: number;
   duration: number;
-  gpsPoints: number;
-  gsmPoints: number;
   firstTime: string;
   lastTime: string;
 }
@@ -53,63 +51,45 @@ export default function HistoryScreen() {
       try {
         const historyResponse = await api.getHistoryByDate('papaji_tractor_01', day.date);
         
-        // Combine GPS and GSM for stats calculation
+        // GPS ONLY MODE
         const gpsPoints = historyResponse?.gps || [];
-        const gsmPoints = historyResponse?.gsm || [];
-        const allPoints = [...gpsPoints, ...gsmPoints].sort((a, b) => 
-          new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-        );
         
-        if (allPoints.length > 0) {
-          // Calculate stats from history points
+        if (gpsPoints.length > 0) {
+          // Calculate stats from GPS points only
           let totalDistance = 0;
           let maxSpeed = 0;
-          let gpsCount = gpsPoints.length;
-          let gsmCount = gsmPoints.length;
 
-          for (let i = 0; i < allPoints.length; i++) {
-            const point = allPoints[i];
+          for (let i = 0; i < gpsPoints.length; i++) {
+            const point = gpsPoints[i];
             
-            // Track max speed (only from GPS points usually)
+            // Track max speed
             const speed = (point as any).speed_kmh || (point as any).speed || 0;
             if (speed > maxSpeed) maxSpeed = speed;
             
-            // Calculate distance (only between GPS points for accuracy)
-            if (point.source === 'gps' && i > 0) {
-              // Find previous GPS point
-              let prevGps = null;
-              for(let j=i-1; j>=0; j--) {
-                if(allPoints[j].source === 'gps') {
-                  prevGps = allPoints[j];
-                  break;
-                }
-              }
-              
-              if (prevGps) {
-                const dist = getDistanceFromLatLon(
-                  prevGps.latitude, prevGps.longitude,
-                  point.latitude, point.longitude
-                );
-                if (dist < 1) totalDistance += dist; // Ignore jumps > 1km
-              }
+            // Calculate distance between consecutive GPS points
+            if (i > 0) {
+              const prevPoint = gpsPoints[i - 1];
+              const dist = getDistanceFromLatLon(
+                prevPoint.latitude, prevPoint.longitude,
+                point.latitude, point.longitude
+              );
+              if (dist < 1) totalDistance += dist; // Ignore jumps > 1km
             }
           }
 
           // Calculate duration
-          const firstTime = new Date(allPoints[0].created_at);
-          const lastTime = new Date(allPoints[allPoints.length - 1].created_at);
+          const firstTime = new Date(gpsPoints[0].created_at);
+          const lastTime = new Date(gpsPoints[gpsPoints.length - 1].created_at);
           const durationMins = Math.round((lastTime.getTime() - firstTime.getTime()) / 1000 / 60);
 
           summaries.push({
             date: day.date,
             displayDate: day.displayDate,
             dayName: day.dayName,
-            totalPoints: allPoints.length,
+            totalPoints: gpsPoints.length,
             totalDistance: Math.round(totalDistance * 100) / 100,
             maxSpeed: Math.round(maxSpeed),
             duration: durationMins,
-            gpsPoints: gpsCount,
-            gsmPoints: gsmCount,
             firstTime: firstTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
             lastTime: lastTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
           });
@@ -123,8 +103,6 @@ export default function HistoryScreen() {
             totalDistance: 0,
             maxSpeed: 0,
             duration: 0,
-            gpsPoints: 0,
-            gsmPoints: 0,
             firstTime: '-',
             lastTime: '-'
           });
@@ -139,8 +117,6 @@ export default function HistoryScreen() {
           totalDistance: 0,
           maxSpeed: 0,
           duration: 0,
-          gpsPoints: 0,
-          gsmPoints: 0,
           firstTime: '-',
           lastTime: '-'
         });
@@ -319,16 +295,9 @@ export default function HistoryScreen() {
                     <View className="flex-row flex-wrap gap-3">
                       <DetailChip 
                         icon="map-marker-path" 
-                        label="GPS Points" 
-                        value={day.gpsPoints} 
+                        label="Total Points" 
+                        value={day.totalPoints} 
                         color="#22c55e" 
-                        isDark={isDark} 
-                      />
-                      <DetailChip 
-                        icon="antenna" 
-                        label="GSM Points" 
-                        value={day.gsmPoints} 
-                        color="#f59e0b" 
                         isDark={isDark} 
                       />
                       <DetailChip 

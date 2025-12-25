@@ -1,11 +1,13 @@
 {
   "name": "papaji-gps-backend",
-  "version": "1.0.0",
-  "description": "Backend for Papaji GPS Tracker",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "Backend for Papaji GPS Tracker - GPS Only Mode",
+  "main": "app.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "verify": "node verify_database.js",
+    "clean": "node clean_all.js",
     "test": "jest --coverage",
     "test:watch": "jest --watch"
   },
