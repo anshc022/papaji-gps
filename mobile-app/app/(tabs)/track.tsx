@@ -124,13 +124,15 @@ export default function TrackScreen() {
       const totalPoints = gpsPoints.length;
 
       if (totalPoints > 0) {
-        // GPS points for route line
-        let route = gpsPoints.map((p: any) => ({
-          latitude: p.latitude,
-          longitude: p.longitude,
-          speed: p.speed_kmh || p.speed || 0,
-          source: p.source
-        }));
+        // GPS points for route line - Filter out GSM points
+        let route = gpsPoints
+          .filter((p: any) => p.source === 'gps')
+          .map((p: any) => ({
+            latitude: p.latitude,
+            longitude: p.longitude,
+            speed: p.speed_kmh || p.speed || 0,
+            source: p.source
+          }));
 
         const lastPoint = route.length > 0 ? route[route.length - 1] : null;
         const displayPoint = latest?.latitude 
