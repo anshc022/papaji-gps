@@ -327,7 +327,7 @@ export default function DashboardScreen() {
             <View 
               className="items-center justify-center rounded-full border-2 border-white"
               style={{ 
-                backgroundColor: getStatusColor(),
+                backgroundColor: stats.source === 'gsm' ? '#ef4444' : '#22c55e',
                 width: 44, 
                 height: 44,
                 shadowColor: "#000",
@@ -338,10 +338,9 @@ export default function DashboardScreen() {
               }}
             >
               <MaterialCommunityIcons 
-                name="navigation" 
+                name="tractor" 
                 size={26} 
                 color="white" 
-                style={{ transform: [{ rotate: '-45deg' }] }} 
               />
             </View>
           </Marker>
