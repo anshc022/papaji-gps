@@ -43,10 +43,13 @@ router.get('/stats', async (req, res) => {
   let totalDistance = 0;
   let totalDuration = 0;
 
-  if (points.length > 1) {
-    for (let i = 0; i < points.length - 1; i++) {
-      const p1 = points[i];
-      const p2 = points[i + 1];
+  // Filter out GSM points for distance/speed calculations to prevent jumping
+  const validPoints = points.filter(p => p.source !== 'gsm');
+
+  if (validPoints.length > 1) {
+    for (let i = 0; i < validPoints.length - 1; i++) {
+      const p1 = validPoints[i];
+      const p2 = validPoints[i + 1];
       
       if (p1.speed > maxSpeed) maxSpeed = p1.speed;
 
@@ -58,8 +61,8 @@ router.get('/stats', async (req, res) => {
       const timeDiff = (new Date(p2.created_at) - new Date(p1.created_at)) / 60000;
       if (timeDiff > 0 && timeDiff < 10) totalDuration += timeDiff;
     }
-    if (points[points.length - 1].speed > maxSpeed) {
-      maxSpeed = points[points.length - 1].speed;
+    if (validPoints[validPoints.length - 1].speed > maxSpeed) {
+      maxSpeed = validPoints[validPoints.length - 1].speed;
     }
   }
 
