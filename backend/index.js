@@ -69,7 +69,6 @@ async function getBestLatestPoint(deviceId, opts = {}) {
   // STRICTER GPS PRIORITY:
   // Only prefer GPS if it is VERY fresh (within 1 minute)
   // Otherwise, if GSM is newer, show GSM immediately.
-  // This fixes the issue where App shows "GPS" even when using GSM fallback.
   const gpsAgeMinutes = (now - gpsTime) / 60000;
   
   if (gpsAgeMinutes <= 1 && gpsTime >= gsmTime) {
@@ -124,8 +123,8 @@ app.post('/api/telemetry', async (req, res) => {
     const deviceId = points[0]?.device_id;
     if (deviceId) {
       const [gpsLast, gsmLast] = await Promise.all([
-        supabase.from('gps_logs').select('latitude, longitude').eq('device_id', deviceId).order('created_at', { ascending: false }).limit(1),
-        supabase.from('gsm_logs').select('latitude, longitude').eq('device_id', deviceId).order('created_at', { ascending: false }).limit(1)
+        supabase.from('gps_logs').select('latitude, longitude, speed, created_at').eq('device_id', deviceId).order('created_at', { ascending: false }).limit(1),
+        supabase.from('gsm_logs').select('latitude, longitude, created_at').eq('device_id', deviceId).order('created_at', { ascending: false }).limit(1)
       ]);
       if (gpsLast.data && gpsLast.data.length > 0) lastGpsPoint = gpsLast.data[0];
       if (gsmLast.data && gsmLast.data.length > 0) lastGsmPoint = gsmLast.data[0];
@@ -156,19 +155,30 @@ app.post('/api/telemetry', async (req, res) => {
       const source = (p.source || 'gps').toLowerCase();
       const speed = p.speed_kmh || 0;
 
-      // DUPLICATE FILTER: Relaxed for High Performance Mode
-      // Don't store points within 5m of last point (unless moving fast)
-      if (source === 'gps' && lastGpsPoint && speed < 1) {
+      // ✅ IMPROVED DUPLICATE FILTER (Matches ESP32 Fix)
+      // Don't reject legitimate movement - only filter true duplicates
+      if (source === 'gps' && lastGpsPoint) {
         const dist = getDistanceMeters(lastGpsPoint.latitude, lastGpsPoint.longitude, finalLat, finalLon);
-        if (dist < 5) {
-          console.log(`[FILTER] Skipping GPS point (${dist.toFixed(1)}m from last, speed=${speed})`);
+        const timeDiffSeconds = (new Date(createdAt) - new Date(lastGpsPoint.created_at)) / 1000;
+        
+        // Only filter if BOTH:
+        // 1. Very close distance (< 8m instead of 5m)
+        // 2. Very recent (< 3 seconds) AND stationary (speed < 1.5 km/h)
+        // This prevents filtering legitimate slow movement
+        if (dist < 8 && timeDiffSeconds < 3 && speed < 1.5) {
+          console.log(`[FILTER] Skipping GPS duplicate (${dist.toFixed(1)}m, ${timeDiffSeconds.toFixed(1)}s, ${speed.toFixed(1)}km/h)`);
           continue;
         }
       }
+      
       if (source === 'gsm' && lastGsmPoint) {
         const dist = getDistanceMeters(lastGsmPoint.latitude, lastGsmPoint.longitude, finalLat, finalLon);
-        if (dist < 50) {
-          console.log(`[FILTER] Skipping GSM point (${dist.toFixed(1)}m from last)`);
+        const timeDiffSeconds = (new Date(createdAt) - new Date(lastGsmPoint.created_at)) / 1000;
+        
+        // GSM is less accurate, use wider threshold (30m instead of 50m)
+        // But still allow updates if enough time has passed
+        if (dist < 30 && timeDiffSeconds < 10) {
+          console.log(`[FILTER] Skipping GSM duplicate (${dist.toFixed(1)}m, ${timeDiffSeconds.toFixed(1)}s)`);
           continue;
         }
       }
@@ -186,7 +196,7 @@ app.post('/api/telemetry', async (req, res) => {
               created_at: createdAt
           };
           gpsRows.push(row);
-          lastGpsPoint = { latitude: finalLat, longitude: finalLon }; // Update for next point
+          lastGpsPoint = { latitude: finalLat, longitude: finalLon, speed: speed, created_at: createdAt };
       } else {
           const row = {
               device_id: p.device_id,
@@ -198,7 +208,7 @@ app.post('/api/telemetry', async (req, res) => {
               created_at: createdAt
           };
           gsmRows.push(row);
-          lastGsmPoint = { latitude: finalLat, longitude: finalLon }; // Update for next point
+          lastGsmPoint = { latitude: finalLat, longitude: finalLon, created_at: createdAt };
       }
     }
 
@@ -223,16 +233,16 @@ app.post('/api/telemetry', async (req, res) => {
     // --- ALERT LOGIC ---
     const latest = points[points.length - 1];
     const devId = latest.device_id;
-    const speed = latest.speed_kmh;
+    const latestSpeed = latest.speed_kmh;
     
     if (!deviceState[devId]) deviceState[devId] = { isMoving: false };
     
     // Check for Movement Start
-    if (speed > 5.0 && !deviceState[devId].isMoving) {
+    if (latestSpeed > 5.0 && !deviceState[devId].isMoving) {
         deviceState[devId].isMoving = true;
     }
     // Check for Stop
-    else if (speed < 1.0 && deviceState[devId].isMoving) {
+    else if (latestSpeed < 1.0 && deviceState[devId].isMoving) {
         deviceState[devId].isMoving = false;
     }
 
@@ -344,9 +354,12 @@ app.get('/api/stats', async (req, res) => {
 
       const dist = getDistanceFromLatLonInKm(p1.latitude, p1.longitude, p2.latitude, p2.longitude);
       
-      // STATS FILTER: Relaxed to match hardware (10m or 2km/h)
-      // This ensures we count slow tractor work but still ignore tiny GPS jitter
-      if (dist < 100 && (dist > 0.01 || p1.speed > 2)) {
+      // ✅ IMPROVED STATS FILTER (Matches ESP32 Fix)
+      // Count movement if:
+      // 1. Distance > 15m (increased from 10m to match hardware threshold)
+      // 2. OR speed > 2 km/h (actual movement detected)
+      // This prevents counting GPS jitter but captures all real movement
+      if (dist < 100 && (dist > 0.015 || p1.speed > 2)) {
          totalDistanceKm += dist; 
       }
 
@@ -391,7 +404,6 @@ app.get('/api/stats', async (req, res) => {
 
 // --- 3b. Latest Best-Point Endpoint (For App Live Map) ---
 // GET /api/latest?device_id=...
-// Prefer a recent GPS fix over GSM fallback so the map doesn't jump to GSM.
 app.get('/api/latest', async (req, res) => {
   const { device_id } = req.query;
   if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
@@ -399,7 +411,7 @@ app.get('/api/latest', async (req, res) => {
   const { error: latestErr, chosen, decision } = await getBestLatestPoint(device_id, { gpsPreferredWindowMin: 3 });
   if (latestErr) return res.status(500).json({ error: latestErr.message });
   
-  // FIX: Return default object instead of 404 when no data exists (e.g. after wipe)
+  // FIX: Return default object instead of 404 when no data exists
   if (!chosen) {
     return res.json({
       device_id,
@@ -434,7 +446,6 @@ app.get('/api/diagnose', async (req, res) => {
   const { device_id } = req.query;
   if (!device_id) return res.status(400).json({ error: 'Missing device_id' });
 
-  // Use getBestLatestPoint instead of non-existent tracking_history table
   const { chosen: data } = await getBestLatestPoint(device_id, { gpsPreferredWindowMin: 3 });
 
   if (!data) return res.json({ status: 'Unknown', message: 'No data found from device.' });
@@ -462,7 +473,6 @@ app.get('/api/logs', (req, res) => {
 });
 
 // --- 4. Admin: Clear All Data ---
-// POST /api/admin/clear-data (App uses POST)
 app.post('/api/admin/clear-data', async (req, res) => {
   const { pin } = req.body;
   if (pin !== '1477') return res.status(403).json({ error: 'Invalid PIN' });
@@ -512,8 +522,6 @@ app.post('/api/sms/incoming', async (req, res) => {
     addLog('SMS', `Raw SMS data received from ${device_id}`);
 
     // Simple Parser for AT+CMGL response
-    // Format: +CMGL: 1,"REC UNREAD","+9199...",,"23/12/23,10:00:00+22"\r\nMessage Content
-    
     const lines = raw_response.split('\n');
     let currentMsg = null;
 
@@ -527,7 +535,6 @@ app.post('/api/sms/incoming', async (req, res) => {
             }
             
             // Start new message
-            // Extract Sender
             const parts = line.split(',');
             let sender = parts[2] ? parts[2].replace(/"/g, '') : 'Unknown';
             
