@@ -8,61 +8,6 @@ import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '@/services/api';
 
-// Catmull-Rom spline interpolation for smooth curves
-function catmullRomSpline(points: any[], segments: number = 3): any[] {
-  if (points.length < 4) return points;
-  
-  const result: any[] = [];
-  
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[Math.max(0, i - 1)];
-    const p1 = points[i];
-    const p2 = points[Math.min(points.length - 1, i + 1)];
-    const p3 = points[Math.min(points.length - 1, i + 2)];
-    
-    result.push(p1);
-    
-    // Only interpolate if we have enough points and distance warrants it
-    const dist = Math.sqrt(
-      Math.pow(p2.latitude - p1.latitude, 2) + 
-      Math.pow(p2.longitude - p1.longitude, 2)
-    );
-    
-    if (dist > 0.0001) { // Only smooth if points are far enough apart
-      for (let t = 1; t < segments; t++) {
-        const s = t / segments;
-        const s2 = s * s;
-        const s3 = s2 * s;
-        
-        const lat = 0.5 * (
-          (2 * p1.latitude) +
-          (-p0.latitude + p2.latitude) * s +
-          (2 * p0.latitude - 5 * p1.latitude + 4 * p2.latitude - p3.latitude) * s2 +
-          (-p0.latitude + 3 * p1.latitude - 3 * p2.latitude + p3.latitude) * s3
-        );
-        
-        const lon = 0.5 * (
-          (2 * p1.longitude) +
-          (-p0.longitude + p2.longitude) * s +
-          (2 * p0.longitude - 5 * p1.longitude + 4 * p2.longitude - p3.longitude) * s2 +
-          (-p0.longitude + 3 * p1.longitude - 3 * p2.longitude + p3.longitude) * s3
-        );
-        
-        result.push({ latitude: lat, longitude: lon });
-      }
-    }
-  }
-  
-  result.push(points[points.length - 1]);
-  return result;
-}
-
-// Smooth route with bezier-like interpolation for corners
-function smoothRoute(points: any[]): any[] {
-  if (points.length < 4) return points;
-  return catmullRomSpline(points, 4); // 4 segments between each point
-}
-
 export default function TrackScreen() {
   const { activeTheme } = useTheme();
   const isDark = activeTheme === 'dark';
@@ -196,11 +141,6 @@ export default function TrackScreen() {
           latitude: p.latitude,
           longitude: p.longitude
         }));
-
-        // Backend already filters duplicates, just smooth for better visual
-        if (route.length > 5) {
-          route = smoothRoute(route);
-        }
 
         const lastPoint = route.length > 0 ? route[route.length - 1] : null;
         const displayPoint = latest?.latitude 

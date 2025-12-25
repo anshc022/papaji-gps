@@ -135,6 +135,9 @@ app.post('/api/telemetry', async (req, res) => {
       // Use device timestamp if available, otherwise server time
       const createdAt = p.timestamp ? p.timestamp : new Date().toISOString();
       
+      // Debug: Log source
+      if (!p.source) console.log(`[WARN] Point from ${p.device_id} missing 'source', defaulting to GPS`);
+      
       // Fix: Swap Lat/Lon if swapped (India region check)
       let finalLat = parseFloat(p.latitude);
       let finalLon = parseFloat(p.longitude);
@@ -150,7 +153,7 @@ app.post('/api/telemetry', async (req, res) => {
          finalLon = temp;
       }
 
-      const source = p.source || 'gps';
+      const source = (p.source || 'gps').toLowerCase();
       const speed = p.speed_kmh || 0;
 
       // DUPLICATE FILTER: Relaxed for High Performance Mode
