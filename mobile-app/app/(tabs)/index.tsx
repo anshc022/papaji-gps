@@ -370,9 +370,9 @@ export default function DashboardScreen() {
                     {stats.status}
                   </Text>
                   {stats.source && (
-                    <View className={`px-1.5 py-0.5 rounded ${stats.source === 'gps' ? 'bg-green-500/20' : 'bg-red-500/20'}`}>
-                      <Text className={`text-[10px] font-medium ${stats.source === 'gps' ? 'text-green-600' : 'text-red-600'}`}>
-                        {stats.source === 'gps' ? 'GPS' : 'NO GPS'}
+                    <View className={`px-1.5 py-0.5 rounded ${stats.source === 'gps' ? 'bg-green-500/20' : stats.source === 'gsm' ? 'bg-blue-500/20' : 'bg-red-500/20'}`}>
+                      <Text className={`text-[10px] font-medium ${stats.source === 'gps' ? 'text-green-600' : stats.source === 'gsm' ? 'text-blue-600' : 'text-red-600'}`}>
+                        {stats.source === 'gps' ? 'GPS' : stats.source === 'gsm' ? 'GSM' : 'NO GPS'}
                       </Text>
                     </View>
                   )}

@@ -23,7 +23,7 @@ export interface LocationPoint {
   latitude: number;
   longitude: number;
   speed_kmh: number;
-  source: 'gps' | 'none';
+  source: 'gps' | 'gsm' | 'none';
   signal?: number;
   hdop?: number;
   satellites?: number;

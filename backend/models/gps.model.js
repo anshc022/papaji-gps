@@ -37,7 +37,7 @@ class GPSModel {
   static async getHistory(deviceId, startDate, endDate) {
     const { data, error } = await supabase
       .from('gps_logs')
-      .select('latitude, longitude, speed, created_at, hdop, satellites')
+      .select('latitude, longitude, speed, created_at, hdop, satellites, source, signal')
       .eq('device_id', deviceId)
       .gte('created_at', startDate)
       .lte('created_at', endDate)

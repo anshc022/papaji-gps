@@ -19,7 +19,7 @@ router.get('/history', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
 
   res.json({
-    gps: data.map(p => ({ ...p, source: 'gps' })),
+    gps: data.map(p => ({ ...p, source: p.source || 'gps' })),
     gsm: [] // Empty for backward compatibility
   });
 });
@@ -77,7 +77,7 @@ router.get('/stats', async (req, res) => {
     total_duration_minutes: Math.round(totalDuration),
     total_points: points.length,
     status,
-    source: lastPoint ? 'gps' : 'none',
+    source: lastPoint ? (lastPoint.source || 'gps') : 'none',
     signal: lastPoint?.signal || 0,
     hdop: lastPoint?.hdop || null,
     satellites: lastPoint?.satellites || 0,
