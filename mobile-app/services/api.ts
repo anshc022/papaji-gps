@@ -195,6 +195,18 @@ export const api = {
   },
 
   /**
+   * Clear all GPS/GSM data
+   * @param pin Security PIN (default: 1477)
+   */
+  async clearAllData(pin = '1477'): Promise<boolean> {
+    const result = await request('/api/admin/clear-data', { 
+      method: 'POST',
+      body: JSON.stringify({ pin })
+    });
+    return result !== null;
+  },
+
+  /**
    * Get device diagnosis
    */
   async getDiagnosis(deviceId: string): Promise<any | null> {
