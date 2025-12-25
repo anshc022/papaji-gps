@@ -89,8 +89,8 @@ const char* OWNER_PHONE_1 = "+919939630600";
 const char* OWNER_PHONE_2 = "+917903636910";
 
 // GPS Quality / Freshness
-const unsigned long GPS_MAX_AGE_MS = 30000;
-const int GPS_MIN_SATS = 3;
+const unsigned long GPS_MAX_AGE_MS = 5000; // FIXED: 5 seconds (was 30s - too stale!)
+const int GPS_MIN_SATS = 4; // FIXED: Need 4 sats minimum for reliability
 const float GPS_MAX_HDOP = 5.0;
 
 // Counters for debugging
@@ -433,10 +433,23 @@ bool sendRawJson(String jsonString) {
 }
 
 bool hasFreshGpsFix() {
+  // STRICT GPS VALIDATION - No stale data allowed!
   if (!gps.location.isValid()) return false;
+  
+  // CRITICAL: GPS data must be VERY fresh (< 5 seconds)
   if (gps.location.age() > GPS_MAX_AGE_MS) return false;
-  if (gps.satellites.isValid() && gps.satellites.value() < GPS_MIN_SATS) return false;
+  
+  // CRITICAL: Must have satellites RIGHT NOW (not cached data)
+  if (!gps.satellites.isValid()) return false;
+  int currentSats = gps.satellites.value();
+  if (currentSats < GPS_MIN_SATS) return false;
+  
+  // Check satellite data freshness too
+  if (gps.satellites.age() > GPS_MAX_AGE_MS) return false;
+  
+  // HDOP check (signal quality)
   if (gps.hdop.isValid() && gps.hdop.hdop() > GPS_MAX_HDOP) return false;
+  
   return true;
 }
 
@@ -467,10 +480,12 @@ void processOfflineData() {
     }
   }
   file.close();
+  
+  // ✅ DELETE processed file after successful upload
   SPIFFS.remove("/processing.txt");
   
   if (count > 0) {
-    Serial.printf("[OFFLINE] Uploaded %d saved points\n", count);
+    Serial.printf("[OFFLINE] ✅ Uploaded & DELETED %d saved points from ESP32\n", count);
   }
 }
 
@@ -487,7 +502,9 @@ void bufferData(float lat, float lon, float speed, String source, int signal, fl
   obj["battery_voltage"] = 4.0; 
   if (timestamp != "") obj["timestamp"] = timestamp.c_str();
 
-  Serial.println("[DEBUG] Buffering point. Source: " + source);
+  // ✅ DEBUG: Show exactly what we're sending
+  Serial.printf("[BUFFER] Source='%s' | Lat=%.6f | Lon=%.6f | Speed=%.1f\n", 
+                source.c_str(), lat, lon, speed);
 
   if (batchArray.size() >= BATCH_SIZE) flushBatch();
 }
@@ -502,6 +519,8 @@ void flushBatch() {
     if (sendRawJson(jsonString)) {
       successfulSends++;
       batchArray.clear(); 
+      
+      // ✅ After successful online send, process and DELETE offline backlog
       processOfflineData(); 
     } else {
       failedSends++;

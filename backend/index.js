@@ -134,8 +134,8 @@ app.post('/api/telemetry', async (req, res) => {
       // Use device timestamp if available, otherwise server time
       const createdAt = p.timestamp ? p.timestamp : new Date().toISOString();
       
-      // Debug: Log source
-      if (!p.source) console.log(`[WARN] Point from ${p.device_id} missing 'source', defaulting to GPS`);
+      // ✅ CRITICAL DEBUG: Log raw source before processing
+      console.log(`[TELEMETRY] Raw data: source='${p.source}', lat=${p.latitude}, lon=${p.longitude}, speed=${p.speed_kmh}`);
       
       // Fix: Swap Lat/Lon if swapped (India region check)
       let finalLat = parseFloat(p.latitude);
@@ -154,6 +154,9 @@ app.post('/api/telemetry', async (req, res) => {
 
       const source = (p.source || 'gps').toLowerCase();
       const speed = p.speed_kmh || 0;
+
+      // ✅ DEBUG: Show which table this point will go to
+      console.log(`[ROUTING] Source='${source}' -> Table='${source === 'gps' ? 'gps_logs' : 'gsm_logs'}'`);
 
       // ✅ IMPROVED DUPLICATE FILTER (Matches ESP32 Fix)
       // Don't reject legitimate movement - only filter true duplicates
