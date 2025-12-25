@@ -43,11 +43,8 @@ router.post('/', async (req, res) => {
       const speed = p.speed_kmh || 0;
       const createdAt = p.timestamp || new Date().toISOString();
 
-      // GPS ONLY - ignore non-GPS sources
-      if (source !== 'gps') {
-        console.log(`[FILTER] Ignoring non-GPS source: ${source}`);
-        continue;
-      }
+      // ALLOW BOTH GPS AND GSM
+      // if (source !== 'gps') { ... } // Removed filter
 
       // Duplicate filter
       if (lastPoint) {
@@ -68,6 +65,7 @@ router.post('/', async (req, res) => {
         signal: p.signal || 0,
         hdop: p.hdop || null,
         satellites: p.satellites || 0,
+        source: source,
         created_at: createdAt
       });
     }

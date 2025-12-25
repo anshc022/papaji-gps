@@ -35,6 +35,7 @@ CREATE TABLE gps_logs (
   signal INTEGER DEFAULT 0,
   hdop DOUBLE PRECISION,
   satellites INTEGER DEFAULT 0,
+  source TEXT DEFAULT 'gps',
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
