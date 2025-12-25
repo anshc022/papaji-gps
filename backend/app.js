@@ -8,6 +8,7 @@
 const express = require('express');
 const cors = require('cors');
 const DeviceModel = require('./models/device.model');
+const { getLogs } = require('./utils/logger');
 require('dotenv').config();
 
 const app = express();
@@ -32,6 +33,16 @@ app.use('/api/telemetry', telemetryRouter);
 app.use('/api', gpsRouter);
 app.use('/api/sms', smsRouter);
 app.use('/api/admin', adminRouter);
+
+// Server Logs Endpoint
+app.get('/api/logs', (req, res) => {
+  res.json({
+    logs: getLogs(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    nodeVersion: process.version
+  });
+});
 
 // Device token registration
 app.post('/api/register-token', async (req, res) => {

@@ -26,6 +26,9 @@ function addLog(type, message) {
   console.log(`[${type}] ${message}`);
 }
 
+// Initial log
+addLog('SYSTEM', 'Server process initialized');
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -527,5 +530,6 @@ function deg2rad(deg) { return deg * (Math.PI/180); }
 
 app.listen(PORT, () => {
   console.log(`Papaji GPS Backend running on port ${PORT}`);
+  addLog('SYSTEM', `Server started on port ${PORT}`);
   console.log(`Deployment triggered at ${new Date().toISOString()}`);
 });
