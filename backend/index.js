@@ -31,8 +31,8 @@ app.use(cors());
 app.use(express.json());
 
 async function getBestLatestPoint(deviceId, opts = {}) {
-  // STRICT MODE: If GSM is newer by even 1 second, show GSM.
-  // This fixes the issue where "GPS" is shown even when inside the house.
+  // GPS PRIORITY: When GPS is fresh (within 2 mins), always prefer GPS over GSM
+  // GPS is more accurate, so we want to switch to it immediately when available
   
   // 1. Get Latest GPS
   const { data: lastGpsData } = await supabase
@@ -62,13 +62,24 @@ async function getBestLatestPoint(deviceId, opts = {}) {
   if (!lastGps) return { error: null, chosen: lastGsm, decision: 'only_gsm' };
   if (!lastGsm) return { error: null, chosen: lastGps, decision: 'only_gps' };
 
+  const now = Date.now();
   const gpsTime = new Date(lastGps.created_at).getTime();
   const gsmTime = new Date(lastGsm.created_at).getTime();
+  const gpsAgeMinutes = (now - gpsTime) / 60000;
   
-  // STRICT COMPARISON: Whichever is newer wins.
-  return gpsTime >= gsmTime 
-      ? { error: null, chosen: lastGps, decision: 'latest_is_gps' }
-      : { error: null, chosen: lastGsm, decision: 'latest_is_gsm' };
+  // GPS PRIORITY: If GPS is fresh (within 2 minutes), ALWAYS prefer GPS
+  // This makes GPS switch instantly when it comes back
+  if (gpsAgeMinutes <= 2) {
+    return { error: null, chosen: lastGps, decision: 'gps_fresh_priority' };
+  }
+  
+  // If GPS is stale (>2 mins old), use GSM if it's newer
+  if (gsmTime > gpsTime) {
+    return { error: null, chosen: lastGsm, decision: 'gsm_newer_gps_stale' };
+  }
+  
+  // Fallback to GPS
+  return { error: null, chosen: lastGps, decision: 'gps_default' };
 }
 
 // --- 0. Register Token Endpoint ---
