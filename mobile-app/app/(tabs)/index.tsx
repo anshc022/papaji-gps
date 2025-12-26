@@ -116,12 +116,14 @@ export default function DashboardScreen() {
       setRouteCoordinates(route);
 
       // Detect stops (5+ minutes at same location with speed < 2 km/h)
+      // Use ALL points (including GSM) since we want to detect when tractor stopped
+      const allPoints = history?.gps || [];
       const stops: {latitude: number, longitude: number, duration: number}[] = [];
       let stopStart: any = null;
       let stopLocation: any = null;
       
-      for (let i = 0; i < gpsPoints.length; i++) {
-        const p = gpsPoints[i];
+      for (let i = 0; i < allPoints.length; i++) {
+        const p = allPoints[i];
         const speed = (p as any).speed_kmh || (p as any).speed || 0;
         
         if (speed < 2) {
@@ -131,7 +133,7 @@ export default function DashboardScreen() {
           }
         } else {
           if (stopStart && stopLocation) {
-            const stopEnd = new Date((gpsPoints[i-1] as any).created_at);
+            const stopEnd = new Date((allPoints[i-1] as any).created_at);
             const durationMins = (stopEnd.getTime() - stopStart.getTime()) / 60000;
             if (durationMins >= 5) {
               stops.push({ ...stopLocation, duration: Math.round(durationMins) });
@@ -142,14 +144,15 @@ export default function DashboardScreen() {
         }
       }
       // Check if still stopped at end
-      if (stopStart && stopLocation && gpsPoints.length > 0) {
-        const lastPoint = gpsPoints[gpsPoints.length - 1];
+      if (stopStart && stopLocation && allPoints.length > 0) {
+        const lastPoint = allPoints[allPoints.length - 1];
         const stopEnd = new Date((lastPoint as any).created_at);
         const durationMins = (stopEnd.getTime() - stopStart.getTime()) / 60000;
         if (durationMins >= 5) {
           stops.push({ ...stopLocation, duration: Math.round(durationMins) });
         }
       }
+      console.log('Stop markers found:', stops.length);
       setStopMarkers(stops);
 
       // Set live tractor location from latest point
