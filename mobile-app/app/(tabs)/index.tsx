@@ -34,7 +34,7 @@ export default function DashboardScreen() {
   const [currentSpeed, setCurrentSpeed] = useState(0);
   const [tractorHeading, setTractorHeading] = useState(0);
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
-  const [stopMarkers, setStopMarkers] = useState<{latitude: number, longitude: number, duration: number}[]>([]);
+  const [stopMarkers, setStopMarkers] = useState<{latitude: number, longitude: number, duration: number, type: 'S' | 'P'}[]>([]);
   const [hasCentered, setHasCentered] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -115,10 +115,10 @@ export default function DashboardScreen() {
         }));
       setRouteCoordinates(route);
 
-      // Detect stops (5+ minutes at same location with speed < 2 km/h)
+      // Detect stops: S = 5-60 min, P = 60+ min (Park)
       // Use ALL points (including GSM) since we want to detect when tractor stopped
       const allPoints = history?.gps || [];
-      const stops: {latitude: number, longitude: number, duration: number}[] = [];
+      const stops: {latitude: number, longitude: number, duration: number, type: 'S' | 'P'}[] = [];
       let stopStart: any = null;
       let stopLocation: any = null;
       
@@ -136,7 +136,8 @@ export default function DashboardScreen() {
             const stopEnd = new Date((allPoints[i-1] as any).created_at);
             const durationMins = (stopEnd.getTime() - stopStart.getTime()) / 60000;
             if (durationMins >= 5) {
-              stops.push({ ...stopLocation, duration: Math.round(durationMins) });
+              const type = durationMins >= 60 ? 'P' : 'S';
+              stops.push({ ...stopLocation, duration: Math.round(durationMins), type });
             }
           }
           stopStart = null;
@@ -149,7 +150,8 @@ export default function DashboardScreen() {
         const stopEnd = new Date((lastPoint as any).created_at);
         const durationMins = (stopEnd.getTime() - stopStart.getTime()) / 60000;
         if (durationMins >= 5) {
-          stops.push({ ...stopLocation, duration: Math.round(durationMins) });
+          const type = durationMins >= 60 ? 'P' : 'S';
+          stops.push({ ...stopLocation, duration: Math.round(durationMins), type });
         }
       }
       console.log('Stop markers found:', stops.length);
@@ -347,7 +349,7 @@ export default function DashboardScreen() {
             />
           )}
 
-          {/* Stop Markers - Places where tractor stopped for 5+ mins */}
+          {/* Stop Markers - S = Stop (5-60min yellow), P = Park (60min+ blue) */}
           {stopMarkers.map((stop, idx) => (
             <Marker
               key={`stop-${idx}`}
@@ -358,14 +360,15 @@ export default function DashboardScreen() {
                 const hours = Math.floor(mins / 60);
                 const remainMins = mins % 60;
                 const timeStr = hours > 0 ? `${hours}h ${remainMins}m` : `${mins} min`;
+                const label = stop.type === 'P' ? 'Parked' : 'Stopped';
                 if (Platform.OS === 'android') {
-                  ToastAndroid.show(`Stopped here for ${timeStr}`, ToastAndroid.SHORT);
+                  ToastAndroid.show(`${label} here for ${timeStr}`, ToastAndroid.SHORT);
                 }
               }}
             >
               <View
                 style={{
-                  backgroundColor: '#f59e0b',
+                  backgroundColor: stop.type === 'P' ? '#3b82f6' : '#f59e0b',
                   width: 28,
                   height: 28,
                   borderRadius: 14,
@@ -380,7 +383,7 @@ export default function DashboardScreen() {
                   elevation: 3
                 }}
               >
-                <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 12 }}>S</Text>
+                <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 12 }}>{stop.type}</Text>
               </View>
             </Marker>
           ))}

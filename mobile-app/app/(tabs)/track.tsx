@@ -3,7 +3,7 @@ import { useMapType } from '@/context/MapContext';
 import { useTheme } from '@/context/ThemeContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useState, useRef, useEffect } from 'react';
-import { Text, TouchableOpacity, View, Alert, ActivityIndicator, ScrollView } from 'react-native';
+import { Text, TouchableOpacity, View, Alert, ActivityIndicator, ScrollView, Platform, ToastAndroid } from 'react-native';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { api } from '@/services/api';
@@ -57,6 +57,7 @@ export default function TrackScreen() {
     dataPoints: 0,
     location: { latitude: 30.7333, longitude: 76.7794 }
   });
+  const [stopMarkers, setStopMarkers] = useState<{latitude: number, longitude: number, duration: number, type: 'S' | 'P'}[]>([]);
 
   const [region, setRegion] = useState({
     latitude: 30.7333,
@@ -122,6 +123,44 @@ export default function TrackScreen() {
       // GPS ONLY MODE - ignore GSM data
       const gpsPoints = history?.gps || [];
       const totalPoints = gpsPoints.length;
+
+      // Detect stops: S = 5-60 min, P = 60+ min (Park)
+      const stops: {latitude: number, longitude: number, duration: number, type: 'S' | 'P'}[] = [];
+      let stopStart: any = null;
+      let stopLocation: any = null;
+      
+      for (let i = 0; i < gpsPoints.length; i++) {
+        const p = gpsPoints[i];
+        const speed = (p as any).speed_kmh || (p as any).speed || 0;
+        
+        if (speed < 2) {
+          if (!stopStart) {
+            stopStart = new Date((p as any).created_at);
+            stopLocation = { latitude: p.latitude, longitude: p.longitude };
+          }
+        } else {
+          if (stopStart && stopLocation) {
+            const stopEnd = new Date((gpsPoints[i-1] as any).created_at);
+            const durationMins = (stopEnd.getTime() - stopStart.getTime()) / 60000;
+            if (durationMins >= 5) {
+              const type = durationMins >= 60 ? 'P' : 'S';
+              stops.push({ ...stopLocation, duration: Math.round(durationMins), type });
+            }
+          }
+          stopStart = null;
+          stopLocation = null;
+        }
+      }
+      if (stopStart && stopLocation && gpsPoints.length > 0) {
+        const lastPoint = gpsPoints[gpsPoints.length - 1];
+        const stopEnd = new Date((lastPoint as any).created_at);
+        const durationMins = (stopEnd.getTime() - stopStart.getTime()) / 60000;
+        if (durationMins >= 5) {
+          const type = durationMins >= 60 ? 'P' : 'S';
+          stops.push({ ...stopLocation, duration: Math.round(durationMins), type });
+        }
+      }
+      setStopMarkers(stops);
 
       if (totalPoints > 0) {
         // GPS points for route line - Filter out GSM points
@@ -311,6 +350,45 @@ export default function TrackScreen() {
             <View className="bg-green-500 w-4 h-4 rounded-full border-2 border-white" />
           </Marker>
         )}
+
+        {/* Stop Markers - S = Stop (5-60min yellow), P = Park (60min+ blue) */}
+        {stopMarkers.map((stop, idx) => (
+          <Marker
+            key={`stop-${idx}`}
+            coordinate={{ latitude: stop.latitude, longitude: stop.longitude }}
+            anchor={{ x: 0.5, y: 0.5 }}
+            onPress={() => {
+              const mins = stop.duration;
+              const hours = Math.floor(mins / 60);
+              const remainMins = mins % 60;
+              const timeStr = hours > 0 ? `${hours}h ${remainMins}m` : `${mins} min`;
+              const label = stop.type === 'P' ? 'Parked' : 'Stopped';
+              if (Platform.OS === 'android') {
+                ToastAndroid.show(`${label} here for ${timeStr}`, ToastAndroid.SHORT);
+              }
+            }}
+          >
+            <View
+              style={{
+                backgroundColor: stop.type === 'P' ? '#3b82f6' : '#f59e0b',
+                width: 28,
+                height: 28,
+                borderRadius: 14,
+                borderWidth: 2,
+                borderColor: 'white',
+                alignItems: 'center',
+                justifyContent: 'center',
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 1 },
+                shadowOpacity: 0.2,
+                shadowRadius: 2,
+                elevation: 3
+              }}
+            >
+              <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 12 }}>{stop.type}</Text>
+            </View>
+          </Marker>
+        ))}
       </MapView>
 
       {/* Top Status Bar */}
