@@ -350,6 +350,15 @@ export default function DashboardScreen() {
               key={`stop-${idx}`}
               coordinate={{ latitude: stop.latitude, longitude: stop.longitude }}
               anchor={{ x: 0.5, y: 0.5 }}
+              onPress={() => {
+                const mins = stop.duration;
+                const hours = Math.floor(mins / 60);
+                const remainMins = mins % 60;
+                const timeStr = hours > 0 ? `${hours}h ${remainMins}m` : `${mins} min`;
+                if (Platform.OS === 'android') {
+                  ToastAndroid.show(`Stopped here for ${timeStr}`, ToastAndroid.SHORT);
+                }
+              }}
             >
               <View
                 style={{
