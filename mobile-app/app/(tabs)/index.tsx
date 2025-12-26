@@ -34,6 +34,7 @@ export default function DashboardScreen() {
   const [currentSpeed, setCurrentSpeed] = useState(0);
   const [tractorHeading, setTractorHeading] = useState(0);
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
+  const [stopMarkers, setStopMarkers] = useState<{latitude: number, longitude: number, duration: number}[]>([]);
   const [hasCentered, setHasCentered] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -113,6 +114,43 @@ export default function DashboardScreen() {
           longitude: p.longitude
         }));
       setRouteCoordinates(route);
+
+      // Detect stops (5+ minutes at same location with speed < 2 km/h)
+      const stops: {latitude: number, longitude: number, duration: number}[] = [];
+      let stopStart: any = null;
+      let stopLocation: any = null;
+      
+      for (let i = 0; i < gpsPoints.length; i++) {
+        const p = gpsPoints[i];
+        const speed = (p as any).speed_kmh || (p as any).speed || 0;
+        
+        if (speed < 2) {
+          if (!stopStart) {
+            stopStart = new Date((p as any).created_at);
+            stopLocation = { latitude: p.latitude, longitude: p.longitude };
+          }
+        } else {
+          if (stopStart && stopLocation) {
+            const stopEnd = new Date((gpsPoints[i-1] as any).created_at);
+            const durationMins = (stopEnd.getTime() - stopStart.getTime()) / 60000;
+            if (durationMins >= 5) {
+              stops.push({ ...stopLocation, duration: Math.round(durationMins) });
+            }
+          }
+          stopStart = null;
+          stopLocation = null;
+        }
+      }
+      // Check if still stopped at end
+      if (stopStart && stopLocation && gpsPoints.length > 0) {
+        const lastPoint = gpsPoints[gpsPoints.length - 1];
+        const stopEnd = new Date((lastPoint as any).created_at);
+        const durationMins = (stopEnd.getTime() - stopStart.getTime()) / 60000;
+        if (durationMins >= 5) {
+          stops.push({ ...stopLocation, duration: Math.round(durationMins) });
+        }
+      }
+      setStopMarkers(stops);
 
       // Set live tractor location from latest point
       const lastGpsPoint = gpsPoints.length > 0 ? gpsPoints[gpsPoints.length - 1] : null;
@@ -305,6 +343,35 @@ export default function DashboardScreen() {
               strokeWidth={4}
             />
           )}
+
+          {/* Stop Markers - Places where tractor stopped for 5+ mins */}
+          {stopMarkers.map((stop, idx) => (
+            <Marker
+              key={`stop-${idx}`}
+              coordinate={{ latitude: stop.latitude, longitude: stop.longitude }}
+              anchor={{ x: 0.5, y: 0.5 }}
+            >
+              <View
+                style={{
+                  backgroundColor: '#f59e0b',
+                  width: 28,
+                  height: 28,
+                  borderRadius: 14,
+                  borderWidth: 2,
+                  borderColor: 'white',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 1 },
+                  shadowOpacity: 0.2,
+                  shadowRadius: 2,
+                  elevation: 3
+                }}
+              >
+                <Text style={{ color: 'white', fontWeight: 'bold', fontSize: 12 }}>S</Text>
+              </View>
+            </Marker>
+          ))}
 
           {/* GSM Accuracy Circle - Only if source is GSM */}
           {stats.source === 'gsm' && (
