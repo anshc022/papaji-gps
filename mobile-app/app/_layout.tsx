@@ -53,8 +53,7 @@ function RootLayoutNav() {
   }, []);
 
   useEffect(() => {
-    /* 
-    // Push Notification Logic - Disabled for now
+    // Push Notification Logic - Using own backend
     registerForPushNotificationsAsync().then(token => {
         if (token) {
             setExpoPushToken(token);
@@ -63,10 +62,11 @@ function RootLayoutNav() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    device_id: 'papaji_tractor_01', // Hardcoded for now, or get from storage
+                    device_id: 'papaji_tractor_01',
                     token: token 
                 })
-            }).catch(err => console.log('Token Upload Error:', err));
+            }).then(() => console.log('Push token registered'))
+              .catch(err => console.log('Token Upload Error:', err));
         }
     });
 
@@ -82,7 +82,6 @@ function RootLayoutNav() {
       notificationListener.current && notificationListener.current.remove();
       responseListener.current && responseListener.current.remove();
     };
-    */
   }, []);
 
   return (
@@ -129,13 +128,26 @@ async function registerForPushNotificationsAsync() {
       return;
     }
     
-    // Get the token
+    // Get the token - Works without EAS
     try {
+        // Try with projectId first, fallback to without
         const projectId = Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
-        token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+        if (projectId) {
+          token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+        } else {
+          // Fallback for dev builds without EAS
+          token = (await Notifications.getExpoPushTokenAsync()).data;
+        }
         console.log('Push Token:', token);
     } catch (e) {
         console.log('Error getting token:', e);
+        // Try without projectId as fallback
+        try {
+          token = (await Notifications.getExpoPushTokenAsync()).data;
+          console.log('Push Token (fallback):', token);
+        } catch (e2) {
+          console.log('Fallback also failed:', e2);
+        }
     }
   } else {
     console.log('Must use physical device for Push Notifications');
